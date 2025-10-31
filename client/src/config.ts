@@ -17,9 +17,9 @@ export const SNAKE_COLOR = 0x4CAF50; // Green
 export const SNAKE_HEAD_COLOR = 0x2E7D32; // Darker green
 
 // Food settings
-export const FOOD_COUNT = 100; // Number of food items on the map
+export const FOOD_COUNT = 500; // Number of food items on the map
 export const FOOD_COLOR = 0xFF5722; // Orange-red
-export const FOOD_SIZE = 12;
+export const FOOD_SIZE = 40; // 2x2 grid blocks (2 * GRID_SIZE)
 export const FOOD_SCORE = 10;
 
 // Camera settings

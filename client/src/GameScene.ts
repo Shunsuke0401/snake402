@@ -179,12 +179,6 @@ export class GameScene extends Phaser.Scene {
       this.gameOver('Hit the wall!');
       return;
     }
-    
-    // Check self collision
-    if (this.snake.checkSelfCollision()) {
-      this.gameOver('Hit yourself!');
-      return;
-    }
   }
 
   private updateTimer(): void {

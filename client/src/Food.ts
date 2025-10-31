@@ -41,13 +41,24 @@ export class FoodManager {
     const maxAttempts = 100;
     
     while (attempts < maxAttempts) {
-      const gridX = Math.floor(Math.random() * GRID_COLS);
-      const gridY = Math.floor(Math.random() * GRID_ROWS);
-      const positionKey = `${gridX},${gridY}`;
+      // Adjust random coordinates to ensure 2x2 food fits within bounds
+      const gridX = Math.floor(Math.random() * (GRID_COLS - 1));
+      const gridY = Math.floor(Math.random() * (GRID_ROWS - 1));
       
-      if (!this.occupiedPositions.has(positionKey)) {
-        const x = gridX * GRID_SIZE + GRID_SIZE / 2;
-        const y = gridY * GRID_SIZE + GRID_SIZE / 2;
+      // Check if all 4 positions of the 2x2 block are available
+      const positions = [
+        `${gridX},${gridY}`,
+        `${gridX + 1},${gridY}`,
+        `${gridX},${gridY + 1}`,
+        `${gridX + 1},${gridY + 1}`
+      ];
+      
+      const allPositionsAvailable = positions.every(pos => !this.occupiedPositions.has(pos));
+      
+      if (allPositionsAvailable) {
+        // Center the food item within the 2x2 area
+        const x = gridX * GRID_SIZE + GRID_SIZE;
+        const y = gridY * GRID_SIZE + GRID_SIZE;
         
         const graphics = this.scene.add.graphics();
         const foodItem: FoodItem = {
@@ -60,7 +71,10 @@ export class FoodManager {
         };
         
         this.foodItems.push(foodItem);
-        this.occupiedPositions.add(positionKey);
+        
+        // Mark all 4 positions as occupied
+        positions.forEach(pos => this.occupiedPositions.add(pos));
+        
         this.drawFood(foodItem);
         break;
       }
@@ -99,9 +113,11 @@ export class FoodManager {
   }
 
   public checkCollision(snakeHeadGridX: number, snakeHeadGridY: number): FoodItem | null {
-    const foodIndex = this.foodItems.findIndex(food => 
-      food.gridX === snakeHeadGridX && food.gridY === snakeHeadGridY
-    );
+    const foodIndex = this.foodItems.findIndex(food => {
+      // Check if snake head is within the 2x2 area of the food
+      return snakeHeadGridX >= food.gridX && snakeHeadGridX <= food.gridX + 1 &&
+             snakeHeadGridY >= food.gridY && snakeHeadGridY <= food.gridY + 1;
+    });
     
     if (foodIndex !== -1) {
       const eatenFood = this.foodItems[foodIndex];
@@ -115,9 +131,16 @@ export class FoodManager {
 
   private removeFood(index: number): void {
     const food = this.foodItems[index];
-    const positionKey = `${food.gridX},${food.gridY}`;
     
-    this.occupiedPositions.delete(positionKey);
+    // Remove all 4 positions of the 2x2 food from occupied positions
+    const positions = [
+      `${food.gridX},${food.gridY}`,
+      `${food.gridX + 1},${food.gridY}`,
+      `${food.gridX},${food.gridY + 1}`,
+      `${food.gridX + 1},${food.gridY + 1}`
+    ];
+    
+    positions.forEach(pos => this.occupiedPositions.delete(pos));
     food.graphics.destroy();
     this.foodItems.splice(index, 1);
   }
