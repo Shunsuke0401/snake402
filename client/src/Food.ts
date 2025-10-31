@@ -1,0 +1,161 @@
+import Phaser from 'phaser';
+import {
+  GRID_SIZE,
+  FOOD_COUNT,
+  FOOD_COLOR,
+  FOOD_SIZE,
+  FOOD_SCORE,
+  WORLD_WIDTH,
+  WORLD_HEIGHT,
+  GRID_COLS,
+  GRID_ROWS
+} from './config';
+
+interface FoodItem {
+  gridX: number;
+  gridY: number;
+  x: number;
+  y: number;
+  graphics: Phaser.GameObjects.Graphics;
+  pulsePhase: number; // For animation
+}
+
+export class FoodManager {
+  private scene: Phaser.Scene;
+  private foodItems: FoodItem[] = [];
+  private occupiedPositions: Set<string> = new Set();
+
+  constructor(scene: Phaser.Scene) {
+    this.scene = scene;
+    this.spawnInitialFood();
+  }
+
+  private spawnInitialFood(): void {
+    for (let i = 0; i < FOOD_COUNT; i++) {
+      this.spawnFood();
+    }
+  }
+
+  private spawnFood(): void {
+    let attempts = 0;
+    const maxAttempts = 100;
+    
+    while (attempts < maxAttempts) {
+      const gridX = Math.floor(Math.random() * GRID_COLS);
+      const gridY = Math.floor(Math.random() * GRID_ROWS);
+      const positionKey = `${gridX},${gridY}`;
+      
+      if (!this.occupiedPositions.has(positionKey)) {
+        const x = gridX * GRID_SIZE + GRID_SIZE / 2;
+        const y = gridY * GRID_SIZE + GRID_SIZE / 2;
+        
+        const graphics = this.scene.add.graphics();
+        const foodItem: FoodItem = {
+          gridX,
+          gridY,
+          x,
+          y,
+          graphics,
+          pulsePhase: Math.random() * Math.PI * 2 // Random starting phase
+        };
+        
+        this.foodItems.push(foodItem);
+        this.occupiedPositions.add(positionKey);
+        this.drawFood(foodItem);
+        break;
+      }
+      
+      attempts++;
+    }
+  }
+
+  private drawFood(food: FoodItem): void {
+    const graphics = food.graphics;
+    graphics.clear();
+    
+    // Pulsing animation
+    const pulseScale = 0.8 + 0.2 * Math.sin(food.pulsePhase);
+    const size = FOOD_SIZE * pulseScale;
+    
+    // Main food circle
+    graphics.fillStyle(FOOD_COLOR);
+    graphics.fillCircle(food.x, food.y, size / 2);
+    
+    // Inner highlight for Chrome-Snake feel
+    graphics.fillStyle(0xFFAB91); // Lighter orange
+    graphics.fillCircle(food.x - size * 0.15, food.y - size * 0.15, size * 0.25);
+    
+    // Subtle border
+    graphics.lineStyle(1, 0x000000, 0.3);
+    graphics.strokeCircle(food.x, food.y, size / 2);
+  }
+
+  public update(time: number): void {
+    // Update food animations
+    this.foodItems.forEach(food => {
+      food.pulsePhase += 0.05; // Pulse speed
+      this.drawFood(food);
+    });
+  }
+
+  public checkCollision(snakeHeadGridX: number, snakeHeadGridY: number): FoodItem | null {
+    const foodIndex = this.foodItems.findIndex(food => 
+      food.gridX === snakeHeadGridX && food.gridY === snakeHeadGridY
+    );
+    
+    if (foodIndex !== -1) {
+      const eatenFood = this.foodItems[foodIndex];
+      this.removeFood(foodIndex);
+      this.spawnFood(); // Spawn new food to maintain count
+      return eatenFood;
+    }
+    
+    return null;
+  }
+
+  private removeFood(index: number): void {
+    const food = this.foodItems[index];
+    const positionKey = `${food.gridX},${food.gridY}`;
+    
+    this.occupiedPositions.delete(positionKey);
+    food.graphics.destroy();
+    this.foodItems.splice(index, 1);
+  }
+
+  public addOccupiedPosition(gridX: number, gridY: number): void {
+    const positionKey = `${gridX},${gridY}`;
+    this.occupiedPositions.add(positionKey);
+  }
+
+  public removeOccupiedPosition(gridX: number, gridY: number): void {
+    const positionKey = `${gridX},${gridY}`;
+    this.occupiedPositions.delete(positionKey);
+  }
+
+  public updateSnakePositions(snakeSegments: Array<{ gridX: number; gridY: number }>): void {
+    // Clear old snake positions
+    this.occupiedPositions.forEach(pos => {
+      if (pos.includes('snake_')) {
+        this.occupiedPositions.delete(pos);
+      }
+    });
+    
+    // Add current snake positions
+    snakeSegments.forEach((segment, index) => {
+      const positionKey = `snake_${segment.gridX},${segment.gridY}`;
+      this.occupiedPositions.add(positionKey);
+    });
+  }
+
+  public getFoodScore(): number {
+    return FOOD_SCORE;
+  }
+
+  public destroy(): void {
+    this.foodItems.forEach(food => {
+      food.graphics.destroy();
+    });
+    this.foodItems = [];
+    this.occupiedPositions.clear();
+  }
+}
