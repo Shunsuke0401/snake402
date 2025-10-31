@@ -1,8 +1,8 @@
 // Game Configuration Constants
 
 // World dimensions
-export const WORLD_WIDTH = 6000;
-export const WORLD_HEIGHT = 6000;
+export const WORLD_WIDTH = 18000;
+export const WORLD_HEIGHT = 18000;
 
 // Grid settings
 export const GRID_SIZE = 20;
@@ -21,8 +21,29 @@ export const BASE_SPEED = 200; // pixels per second
 export const BOOST_MULTIPLIER = 1.5; // speed multiplier when boosting
 export const ROTATION_SPEED = 0.1; // smooth rotation interpolation factor
 
+// Boost cost settings
+export const BOOST_COST_RATE = 1000; // milliseconds of boosting to lose 1 segment
+export const MIN_SNAKE_LENGTH = 2; // minimum length before boost is disabled
+
+// Arena boundary settings
+export const ARENA_CENTER_X = WORLD_WIDTH / 2;
+export const ARENA_CENTER_Y = WORLD_HEIGHT / 2;
+export const ARENA_RADIUS = Math.min(WORLD_WIDTH, WORLD_HEIGHT) / 2 - 500; // Much larger arena
+export const ARENA_WARNING_DISTANCE = 300; // Distance from boundary to show warning
+export const ARENA_BOUNDARY_COLOR = 0xFF0000; // Red
+export const ARENA_WARNING_COLOR = 0xFF4444; // Lighter red for warning
+
 // Food settings
-export const FOOD_COUNT = 500; // Number of food items on the map
+// Food pooling system for performance optimization
+export const MAX_FOOD = 2500; // Fixed maximum number of active food items
+export const FOOD_RESPAWN_INTERVAL = 1000; // Check for food replenishment every 1 second (milliseconds)
+
+// Legacy dynamic food count calculation (kept for reference)
+const FOOD_DENSITY_BLOCK_SIZE = 10; // 10x10 grid blocks per food
+const ARENA_AREA_IN_PIXELS = Math.PI * ARENA_RADIUS * ARENA_RADIUS;
+const BLOCK_SIZE_IN_PIXELS = FOOD_DENSITY_BLOCK_SIZE * GRID_SIZE; // 200x200 pixels per block
+const BLOCK_AREA = BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS;
+export const FOOD_COUNT = Math.floor(ARENA_AREA_IN_PIXELS / BLOCK_AREA); // Dynamic food count based on arena area
 
 // Food types
 export enum FoodType {

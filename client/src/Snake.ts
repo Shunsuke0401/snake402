@@ -8,7 +8,9 @@ import {
   BOOST_MULTIPLIER,
   ROTATION_SPEED,
   WORLD_WIDTH,
-  WORLD_HEIGHT
+  WORLD_HEIGHT,
+  BOOST_COST_RATE,
+  MIN_SNAKE_LENGTH
 } from './config';
 
 interface SnakeSegment {
@@ -24,6 +26,7 @@ export class Snake {
   private targetAngle: number = 0; // Target angle to rotate towards
   private speed: number = BASE_SPEED;
   private isBoosting: boolean = false;
+  private boostTime: number = 0; // Track time spent boosting
 
   constructor(scene: Phaser.Scene, startX: number, startY: number) {
     this.scene = scene;
@@ -83,12 +86,36 @@ export class Snake {
   }
 
   public setBoosting(boosting: boolean): void {
+    // Only allow boosting if snake is long enough
+    if (boosting && this.segments.length <= MIN_SNAKE_LENGTH) {
+      this.isBoosting = false;
+      return;
+    }
     this.isBoosting = boosting;
   }
 
   public update(delta: number): void {
     // Smooth rotation towards target angle
     this.updateRotation();
+    
+    // Handle boost cost mechanics
+    if (this.isBoosting) {
+      this.boostTime += delta;
+      
+      // Check if we should reduce snake length
+      if (this.boostTime >= BOOST_COST_RATE) {
+        this.shrink();
+        this.boostTime = 0; // Reset boost timer
+        
+        // Stop boosting if snake becomes too short
+        if (this.segments.length <= MIN_SNAKE_LENGTH) {
+          this.isBoosting = false;
+        }
+      }
+    } else {
+      // Reset boost timer when not boosting
+      this.boostTime = 0;
+    }
     
     // Calculate current speed
     const currentSpeed = this.isBoosting ? this.speed * BOOST_MULTIPLIER : this.speed;
@@ -181,6 +208,19 @@ export class Snake {
     
     this.segments.push(newSegment);
     this.drawSegment(newSegment, false);
+  }
+
+  public shrink(): void {
+    // Don't shrink if already at minimum length
+    if (this.segments.length <= MIN_SNAKE_LENGTH) {
+      return;
+    }
+    
+    // Remove the tail segment
+    const tailSegment = this.segments.pop();
+    if (tailSegment) {
+      tailSegment.graphics.destroy();
+    }
   }
 
   public checkSelfCollision(): boolean {

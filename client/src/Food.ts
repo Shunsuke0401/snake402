@@ -11,97 +11,128 @@ import {
   GRID_ROWS,
   FoodType,
   FOOD_TYPES,
-  FOOD_COLORS
+  FOOD_COLORS,
+  ARENA_CENTER_X,
+  ARENA_CENTER_Y,
+  ARENA_RADIUS,
+  MAX_FOOD,
+  FOOD_RESPAWN_INTERVAL
 } from './config';
 
-interface FoodItem {
+interface FoodData {
   gridX: number;
   gridY: number;
-  x: number;
-  y: number;
-  graphics: Phaser.GameObjects.Graphics;
-  pulsePhase: number; // For animation
   type: FoodType;
   color: number;
   size: number;
   gridSize: number;
   score: number;
   growthAmount: number;
+  pulsePhase: number;
 }
 
 export class FoodManager {
   private scene: Phaser.Scene;
-  private foodItems: FoodItem[] = [];
+  private foodGroup!: Phaser.GameObjects.Group;
   private occupiedPositions: Set<string> = new Set();
+  private lastReplenishTime: number = 0;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
+    this.createFoodGroup();
     this.spawnInitialFood();
   }
 
+  private createFoodGroup(): void {
+    // Create the food texture first
+    this.createFoodTexture();
+    
+    this.foodGroup = this.scene.add.group({
+      maxSize: MAX_FOOD
+    });
+    
+    // Pre-populate the group with sprites
+    for (let i = 0; i < MAX_FOOD; i++) {
+      const sprite = this.scene.add.sprite(0, 0, 'food-circle');
+      sprite.setActive(false).setVisible(false);
+      this.foodGroup.add(sprite);
+    }
+  }
+
+  private createFoodTexture(): void {
+    // Only create the texture once
+    if (this.scene.textures.exists('food-circle')) {
+      return;
+    }
+
+    const graphics = this.scene.add.graphics();
+    graphics.fillStyle(0xffffff); // White circle that we'll tint
+    graphics.fillCircle(FOOD_SIZE / 2, FOOD_SIZE / 2, FOOD_SIZE / 2);
+    graphics.generateTexture('food-circle', FOOD_SIZE, FOOD_SIZE);
+    graphics.destroy();
+  }
+
   private spawnInitialFood(): void {
-    for (let i = 0; i < FOOD_COUNT; i++) {
+    for (let i = 0; i < MAX_FOOD; i++) {
       this.spawnFood();
     }
   }
 
   private spawnFood(): void {
+    // Get an inactive sprite from the pool
+    const sprite = this.foodGroup.getFirstDead(false) as Phaser.GameObjects.Sprite;
+    if (!sprite) {
+      return; // Pool is full
+    }
+
     let attempts = 0;
     const maxAttempts = 100;
-    
-    // Determine food type based on spawn chance
-    const random = Math.random();
-    const foodType = random < FOOD_TYPES[FoodType.SMALL].spawnChance ? FoodType.SMALL : FoodType.LARGE;
-    const foodConfig = FOOD_TYPES[foodType];
-    
-    // Select a random color from the color palette
-    const colorIndex = Math.floor(Math.random() * FOOD_COLORS.length);
-    const foodColor = FOOD_COLORS[colorIndex];
-    
+
     while (attempts < maxAttempts) {
-      // Adjust random coordinates based on food size
-      const maxGridX = GRID_COLS - foodConfig.gridSize;
-      const maxGridY = GRID_ROWS - foodConfig.gridSize;
-      const gridX = Math.floor(Math.random() * maxGridX);
-      const gridY = Math.floor(Math.random() * maxGridY);
-      
-      // Generate positions based on food grid size
-      const positions: string[] = [];
-      for (let dx = 0; dx < foodConfig.gridSize; dx++) {
-        for (let dy = 0; dy < foodConfig.gridSize; dy++) {
-          positions.push(`${gridX + dx},${gridY + dy}`);
-        }
-      }
-      
-      const allPositionsAvailable = positions.every(pos => !this.occupiedPositions.has(pos));
-      
-      if (allPositionsAvailable) {
-        // Center the food item within its grid area
-        const x = gridX * GRID_SIZE + (foodConfig.gridSize * GRID_SIZE) / 2;
-        const y = gridY * GRID_SIZE + (foodConfig.gridSize * GRID_SIZE) / 2;
-        
-        const graphics = this.scene.add.graphics();
-        const foodItem: FoodItem = {
+      // Generate random position within arena bounds with uniform area distribution
+      const angle = Math.random() * Math.PI * 2;
+      // Use square root for uniform area distribution (compensates for increasing circumference)
+      const radius = Math.sqrt(Math.random()) * (ARENA_RADIUS - 50); // Leave some margin
+      const worldX = ARENA_CENTER_X + Math.cos(angle) * radius;
+      const worldY = ARENA_CENTER_Y + Math.sin(angle) * radius;
+
+      // Convert to grid coordinates
+      const gridX = Math.floor(worldX / GRID_SIZE);
+      const gridY = Math.floor(worldY / GRID_SIZE);
+
+      // Check if position is valid and not occupied
+      if (this.isValidPosition(gridX, gridY)) {
+        // Select food type and properties
+         const foodType = this.selectFoodType();
+         const foodConfig = FOOD_TYPES[foodType];
+         const color = FOOD_COLORS[Math.floor(Math.random() * FOOD_COLORS.length)];
+
+        const foodData: FoodData = {
           gridX,
           gridY,
-          x,
-          y,
-          graphics,
-          pulsePhase: Math.random() * Math.PI * 2, // Random starting phase
           type: foodType,
-          color: foodColor,
+          color,
           size: foodConfig.size,
           gridSize: foodConfig.gridSize,
           score: foodConfig.score,
-          growthAmount: foodConfig.growthAmount
+          growthAmount: foodConfig.growthAmount,
+          pulsePhase: Math.random() * Math.PI * 2
         };
-        
-        this.foodItems.push(foodItem);
-        
-        // Mark all positions as occupied
-        positions.forEach(pos => this.occupiedPositions.add(pos));
-        
-        this.drawFood(foodItem);
+
+        // Position and configure the sprite
+        sprite.setPosition(worldX, worldY);
+        sprite.setActive(true).setVisible(true);
+        sprite.setData('foodData', foodData);
+        this.drawFood(sprite, foodData);
+
+        // Mark positions as occupied
+        for (let dx = 0; dx < foodData.gridSize; dx++) {
+          for (let dy = 0; dy < foodData.gridSize; dy++) {
+            const positionKey = `${gridX + dx},${gridY + dy}`;
+            this.occupiedPositions.add(positionKey);
+          }
+        }
+
         break;
       }
       
@@ -109,91 +140,116 @@ export class FoodManager {
     }
   }
 
-  private drawFood(food: FoodItem): void {
-    const graphics = food.graphics;
-    graphics.clear();
+  private drawFood(sprite: Phaser.GameObjects.Sprite, foodData: FoodData): void {
+    // Calculate pulsing effect
+    const pulseScale = 1 + Math.sin(foodData.pulsePhase) * 0.1;
+    const currentSize = foodData.size * pulseScale;
     
-    // Pulsing animation
-    const pulseScale = 0.8 + 0.2 * Math.sin(food.pulsePhase);
-    const size = food.size * pulseScale;
-    
-    // Main food circle with food's color
-    graphics.fillStyle(food.color);
-    graphics.fillCircle(food.x, food.y, size / 2);
-    
-    // Inner highlight for visual appeal - lighter version of the main color
-    const highlightColor = this.getLighterColor(food.color);
-    graphics.fillStyle(highlightColor);
-    graphics.fillCircle(food.x - size * 0.15, food.y - size * 0.15, size * 0.25);
-    
-    // Different visual effects for different food types
-    if (food.type === FoodType.LARGE) {
-      // Add sparkle effect for rare food
-      graphics.fillStyle(0xFFFFFF);
-      const sparkleSize = size * 0.1;
-      graphics.fillCircle(food.x + size * 0.2, food.y - size * 0.2, sparkleSize);
-      graphics.fillCircle(food.x - size * 0.3, food.y + size * 0.1, sparkleSize * 0.7);
+    // Set sprite properties
+    sprite.setTint(foodData.color);
+    sprite.setScale(currentSize / FOOD_SIZE); // Scale relative to base food size
+    sprite.setAlpha(1);
+  }
+
+  private selectFoodType(): FoodType {
+    const rand = Math.random();
+    if (rand < 0.9) return FoodType.SMALL;
+    return FoodType.LARGE;
+  }
+
+  private isValidPosition(gridX: number, gridY: number): boolean {
+    // Check bounds
+    if (gridX < 0 || gridX >= GRID_COLS || gridY < 0 || gridY >= GRID_ROWS) {
+      return false;
     }
-    
-    // Subtle border
-    graphics.lineStyle(1, 0x000000, 0.3);
-    graphics.strokeCircle(food.x, food.y, size / 2);
+
+    // Check if position is occupied
+    const positionKey = `${gridX},${gridY}`;
+    return !this.occupiedPositions.has(positionKey);
   }
 
   private getLighterColor(color: number): number {
-    // Extract RGB components
-    const r = (color >> 16) & 0xFF;
-    const g = (color >> 8) & 0xFF;
-    const b = color & 0xFF;
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
     
-    // Make each component lighter
-    const lighterR = Math.min(255, r + 60);
-    const lighterG = Math.min(255, g + 60);
-    const lighterB = Math.min(255, b + 60);
+    const lighterR = Math.min(255, r + 50);
+    const lighterG = Math.min(255, g + 50);
+    const lighterB = Math.min(255, b + 50);
     
-    // Combine back to hex
     return (lighterR << 16) | (lighterG << 8) | lighterB;
   }
 
   public update(time: number): void {
-    // Update food animations
-    this.foodItems.forEach(food => {
-      food.pulsePhase += 0.05; // Pulse speed
-      this.drawFood(food);
+    // Update pulsing animation for all active food
+    this.foodGroup.children.entries.forEach((child) => {
+      const sprite = child as Phaser.GameObjects.Sprite;
+      if (sprite.active) {
+        const foodData = sprite.getData('foodData') as FoodData;
+        if (foodData) {
+          foodData.pulsePhase += 0.1;
+          this.drawFood(sprite, foodData);
+        }
+      }
     });
-  }
 
-  public checkCollision(snakeHeadGridX: number, snakeHeadGridY: number): FoodItem | null {
-    const foodIndex = this.foodItems.findIndex(food => {
-      // Check if snake head is within the food's grid area
-      return snakeHeadGridX >= food.gridX && snakeHeadGridX < food.gridX + food.gridSize &&
-             snakeHeadGridY >= food.gridY && snakeHeadGridY < food.gridY + food.gridSize;
-    });
-    
-    if (foodIndex !== -1) {
-      const eatenFood = this.foodItems[foodIndex];
-      this.removeFood(foodIndex);
-      this.spawnFood(); // Spawn new food to maintain count
-      return eatenFood;
+    // Maintain food density with timed replenishment
+    if (time - this.lastReplenishTime > FOOD_RESPAWN_INTERVAL) {
+      this.maintainFoodDensity();
+      this.lastReplenishTime = time;
     }
-    
-    return null;
   }
 
-  private removeFood(index: number): void {
-    const food = this.foodItems[index];
+  private maintainFoodDensity(): void {
+    const activeFood = this.foodGroup.countActive(true);
+    const foodNeeded = MAX_FOOD - activeFood;
     
-    // Remove all positions of the food from occupied positions based on its grid size
-    const positions: string[] = [];
-    for (let dx = 0; dx < food.gridSize; dx++) {
-      for (let dy = 0; dy < food.gridSize; dy++) {
-        positions.push(`${food.gridX + dx},${food.gridY + dy}`);
+    // Spawn up to 5 food items at a time to avoid performance spikes
+    const spawnCount = Math.min(foodNeeded, 5);
+    for (let i = 0; i < spawnCount; i++) {
+      this.spawnFood();
+    }
+  }
+
+  public checkCollision(snakeHeadGridX: number, snakeHeadGridY: number): FoodData | null {
+    let eatenFood: FoodData | null = null;
+
+    this.foodGroup.children.entries.forEach((child) => {
+      const sprite = child as Phaser.GameObjects.Sprite;
+      if (sprite.active) {
+        const foodData = sprite.getData('foodData') as FoodData;
+        if (foodData) {
+          // Check if snake head overlaps with any part of the food
+          for (let dx = 0; dx < foodData.gridSize; dx++) {
+            for (let dy = 0; dy < foodData.gridSize; dy++) {
+              if (snakeHeadGridX === foodData.gridX + dx && snakeHeadGridY === foodData.gridY + dy) {
+                eatenFood = foodData;
+                this.recycleFoodSprite(sprite, foodData);
+                return;
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return eatenFood;
+  }
+
+  private recycleFoodSprite(sprite: Phaser.GameObjects.Sprite, foodData: FoodData): void {
+    // Remove from occupied positions
+    for (let dx = 0; dx < foodData.gridSize; dx++) {
+      for (let dy = 0; dy < foodData.gridSize; dy++) {
+        const positionKey = `${foodData.gridX + dx},${foodData.gridY + dy}`;
+        this.occupiedPositions.delete(positionKey);
       }
     }
     
-    positions.forEach(pos => this.occupiedPositions.delete(pos));
-    food.graphics.destroy();
-    this.foodItems.splice(index, 1);
+    // Recycle the sprite instead of destroying it
+    sprite.setActive(false).setVisible(false);
+    sprite.setData('foodData', undefined);
+    
+    // The sprite stays in the group pool for reuse
   }
 
   public addOccupiedPosition(gridX: number, gridY: number): void {
@@ -207,15 +263,15 @@ export class FoodManager {
   }
 
   public updateSnakePositions(snakeSegments: Array<{ gridX: number; gridY: number }>): void {
-    // Clear old snake positions
-    this.occupiedPositions.forEach(pos => {
-      if (pos.includes('snake_')) {
-        this.occupiedPositions.delete(pos);
+    // Clear previous snake positions
+    this.occupiedPositions.forEach(positionKey => {
+      if (positionKey.startsWith('snake_')) {
+        this.occupiedPositions.delete(positionKey);
       }
     });
-    
+
     // Add current snake positions
-    snakeSegments.forEach((segment, index) => {
+    snakeSegments.forEach(segment => {
       const positionKey = `snake_${segment.gridX},${segment.gridY}`;
       this.occupiedPositions.add(positionKey);
     });
@@ -226,10 +282,6 @@ export class FoodManager {
   }
 
   public destroy(): void {
-    this.foodItems.forEach(food => {
-      food.graphics.destroy();
-    });
-    this.foodItems = [];
-    this.occupiedPositions.clear();
+    this.foodGroup.destroy();
   }
 }

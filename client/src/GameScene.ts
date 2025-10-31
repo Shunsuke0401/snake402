@@ -10,7 +10,13 @@ import {
   GRID_SIZE,
   CAMERA_FOLLOW_SPEED,
   CAMERA_ZOOM,
-  GAME_DURATION
+  GAME_DURATION,
+  ARENA_CENTER_X,
+  ARENA_CENTER_Y,
+  ARENA_RADIUS,
+  ARENA_WARNING_DISTANCE,
+  ARENA_BOUNDARY_COLOR,
+  ARENA_WARNING_COLOR
 } from './config';
 
 export class GameScene extends Phaser.Scene {
@@ -22,6 +28,15 @@ export class GameScene extends Phaser.Scene {
   private score: number = 0;
   private isGameActive: boolean = true;
   private fpsText!: Phaser.GameObjects.Text;
+  
+  // Mouse tracking for cursor behavior
+  private lastMouseX: number = 0;
+  private lastMouseY: number = 0;
+  private hasMouseMoved: boolean = false;
+  
+  // Arena boundary graphics
+  private arenaBoundary!: Phaser.GameObjects.Graphics;
+  private arenaWarning!: Phaser.GameObjects.Graphics;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -49,6 +64,9 @@ export class GameScene extends Phaser.Scene {
     
     // Draw grid lines for visual reference
     this.drawGrid();
+    
+    // Create arena boundary
+    this.createArenaBoundary();
   }
 
   private drawGrid(): void {
@@ -70,9 +88,36 @@ export class GameScene extends Phaser.Scene {
     graphics.strokePath();
   }
 
+  private createArenaBoundary(): void {
+    // Create the main boundary circle (initially invisible)
+    this.arenaBoundary = this.add.graphics();
+    this.arenaBoundary.lineStyle(8, ARENA_BOUNDARY_COLOR, 1);
+    this.arenaBoundary.strokeCircle(ARENA_CENTER_X, ARENA_CENTER_Y, ARENA_RADIUS);
+    this.arenaBoundary.setVisible(false);
+    
+    // Create the warning circle (initially invisible)
+    this.arenaWarning = this.add.graphics();
+    this.arenaWarning.lineStyle(4, ARENA_WARNING_COLOR, 0.6);
+    this.arenaWarning.strokeCircle(ARENA_CENTER_X, ARENA_CENTER_Y, ARENA_RADIUS);
+    this.arenaWarning.setVisible(false);
+  }
+
   private setupInput(): void {
     // Enable mouse input
     this.input.mouse!.enabled = true;
+    
+    // Track mouse movement
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      const worldX = pointer.worldX;
+      const worldY = pointer.worldY;
+      
+      // Check if mouse actually moved
+      if (Math.abs(worldX - this.lastMouseX) > 1 || Math.abs(worldY - this.lastMouseY) > 1) {
+        this.hasMouseMoved = true;
+        this.lastMouseX = worldX;
+        this.lastMouseY = worldY;
+      }
+    });
   }
 
   private setupGame(): void {
@@ -120,21 +165,30 @@ export class GameScene extends Phaser.Scene {
   private handleInput(): void {
     if (!this.isGameActive) return;
     
-    // Get cursor position in world coordinates
     const pointer = this.input.activePointer;
-    const worldX = pointer.worldX;
-    const worldY = pointer.worldY;
     
-    // Get snake head position
-    const headPos = this.snake.getHeadPosition();
+    // Only update snake direction if mouse has moved
+    if (this.hasMouseMoved) {
+      // Get cursor position in world coordinates
+      const worldX = pointer.worldX;
+      const worldY = pointer.worldY;
+      
+      // Get snake head position
+      const headPos = this.snake.getHeadPosition();
+      
+      // Calculate angle from snake head to cursor
+      const dx = worldX - headPos.x;
+      const dy = worldY - headPos.y;
+      const targetAngle = Math.atan2(dy, dx);
+      
+      // Set snake target angle
+      this.snake.setTargetAngle(targetAngle);
+      
+      // Reset mouse moved flag
+      this.hasMouseMoved = false;
+    }
     
-    // Calculate angle from snake head to cursor
-    const dx = worldX - headPos.x;
-    const dy = worldY - headPos.y;
-    const targetAngle = Math.atan2(dy, dx);
-    
-    // Set snake target angle and boosting state
-    this.snake.setTargetAngle(targetAngle);
+    // Always handle boosting regardless of mouse movement
     this.snake.setBoosting(pointer.isDown);
   }
 
@@ -171,11 +225,18 @@ export class GameScene extends Phaser.Scene {
       this.uiScene.updateLength(this.snake.getLength());
     }
     
-    // Check wall collision
-    if (this.snake.checkWallCollision()) {
+    // Check arena boundary collision
+    const head = this.snake.getHeadPosition();
+    const dx = head.x - ARENA_CENTER_X;
+    const dy = head.y - ARENA_CENTER_Y;
+    const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
+    
+    if (distanceFromCenter >= ARENA_RADIUS) {
       this.gameOver('Hit the wall!');
       return;
     }
+    
+    // Self collision disabled - players can pass through their own body
   }
 
   private updateTimer(): void {
@@ -185,6 +246,34 @@ export class GameScene extends Phaser.Scene {
     const timeRemaining = GAME_DURATION - elapsed;
     
     this.uiScene.updateTimer(timeRemaining);
+  }
+
+  private checkArenaProximity(): void {
+    const head = this.snake.getHeadPosition();
+    
+    // Calculate distance from snake head to arena center
+    const dx = head.x - ARENA_CENTER_X;
+    const dy = head.y - ARENA_CENTER_Y;
+    const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
+    
+    // Check if snake is approaching the boundary
+    const distanceFromBoundary = ARENA_RADIUS - distanceFromCenter;
+    
+    if (distanceFromBoundary <= ARENA_WARNING_DISTANCE) {
+      // Show warning circle when approaching boundary
+      this.arenaWarning.setVisible(true);
+      
+      // Show red boundary when very close
+      if (distanceFromBoundary <= 100) {
+        this.arenaBoundary.setVisible(true);
+      } else {
+        this.arenaBoundary.setVisible(false);
+      }
+    } else {
+      // Hide both circles when far from boundary
+      this.arenaWarning.setVisible(false);
+      this.arenaBoundary.setVisible(false);
+    }
   }
 
   private gameOver(reason: string): void {
@@ -227,6 +316,9 @@ export class GameScene extends Phaser.Scene {
     
     // Check collisions
     this.checkCollisions();
+    
+    // Check arena proximity
+    this.checkArenaProximity();
     
     // Update timer
     this.updateTimer();
