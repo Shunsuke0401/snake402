@@ -10,8 +10,6 @@ import {
   GRID_SIZE,
   CAMERA_FOLLOW_SPEED,
   CAMERA_ZOOM,
-  Direction,
-  KEYS,
   GAME_DURATION
 } from './config';
 
@@ -19,8 +17,6 @@ export class GameScene extends Phaser.Scene {
   private snake!: Snake;
   private foodManager!: FoodManager;
   private uiScene!: UIScene;
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasdKeys!: { [key: string]: Phaser.Input.Keyboard.Key };
   
   private gameStartTime: number = 0;
   private score: number = 0;
@@ -75,16 +71,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    // Arrow keys
-    this.cursors = this.input.keyboard!.createCursorKeys();
-    
-    // WASD keys
-    this.wasdKeys = {
-      W: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      A: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      S: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-      D: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
-    };
+    // Enable mouse input
+    this.input.mouse!.enabled = true;
   }
 
   private setupGame(): void {
@@ -132,16 +120,22 @@ export class GameScene extends Phaser.Scene {
   private handleInput(): void {
     if (!this.isGameActive) return;
     
-    // Check for direction changes
-    if (this.cursors.up.isDown || this.wasdKeys.W.isDown) {
-      this.snake.setDirection(Direction.UP);
-    } else if (this.cursors.down.isDown || this.wasdKeys.S.isDown) {
-      this.snake.setDirection(Direction.DOWN);
-    } else if (this.cursors.left.isDown || this.wasdKeys.A.isDown) {
-      this.snake.setDirection(Direction.LEFT);
-    } else if (this.cursors.right.isDown || this.wasdKeys.D.isDown) {
-      this.snake.setDirection(Direction.RIGHT);
-    }
+    // Get cursor position in world coordinates
+    const pointer = this.input.activePointer;
+    const worldX = pointer.worldX;
+    const worldY = pointer.worldY;
+    
+    // Get snake head position
+    const headPos = this.snake.getHeadPosition();
+    
+    // Calculate angle from snake head to cursor
+    const dx = worldX - headPos.x;
+    const dy = worldY - headPos.y;
+    const targetAngle = Math.atan2(dy, dx);
+    
+    // Set snake target angle and boosting state
+    this.snake.setTargetAngle(targetAngle);
+    this.snake.setBoosting(pointer.isDown);
   }
 
   private updateCamera(): void {
@@ -168,8 +162,11 @@ export class GameScene extends Phaser.Scene {
     // Check food collision
     const eatenFood = this.foodManager.checkCollision(headGridPos.gridX, headGridPos.gridY);
     if (eatenFood) {
-      this.snake.grow();
-      this.score += this.foodManager.getFoodScore();
+      // Grow snake based on food's growth amount
+      for (let i = 0; i < eatenFood.growthAmount; i++) {
+        this.snake.grow();
+      }
+      this.score += eatenFood.score;
       this.uiScene.updateScore(this.score);
       this.uiScene.updateLength(this.snake.getLength());
     }
@@ -212,7 +209,7 @@ export class GameScene extends Phaser.Scene {
     this.gameStartTime = this.time.now;
   }
 
-  update(time: number): void {
+  update(time: number, delta: number): void {
     // Update FPS display
     this.fpsText.setText(`FPS: ${Math.round(this.game.loop.actualFps)}`);
     
@@ -222,7 +219,7 @@ export class GameScene extends Phaser.Scene {
     this.handleInput();
     
     // Update game objects
-    this.snake.update(time);
+    this.snake.update(delta);
     this.foodManager.update(time);
     
     // Update camera

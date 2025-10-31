@@ -16,11 +16,55 @@ export const SNAKE_TURN_SPEED = 0.1; // smooth turning rate
 export const SNAKE_COLOR = 0x4CAF50; // Green
 export const SNAKE_HEAD_COLOR = 0x2E7D32; // Darker green
 
+// Cursor control settings
+export const BASE_SPEED = 200; // pixels per second
+export const BOOST_MULTIPLIER = 1.5; // speed multiplier when boosting
+export const ROTATION_SPEED = 0.1; // smooth rotation interpolation factor
+
 // Food settings
 export const FOOD_COUNT = 500; // Number of food items on the map
-export const FOOD_COLOR = 0xFF5722; // Orange-red
-export const FOOD_SIZE = 40; // 2x2 grid blocks (2 * GRID_SIZE)
-export const FOOD_SCORE = 10;
+
+// Food types
+export enum FoodType {
+  SMALL = 'small',
+  LARGE = 'large'
+}
+
+export const FOOD_TYPES = {
+  [FoodType.SMALL]: {
+    color: 0xFF5722, // Orange-red
+    size: 20, // 1x1 grid block
+    gridSize: 1,
+    score: 10,
+    growthAmount: 1,
+    spawnChance: 0.9 // 90% chance
+  },
+  [FoodType.LARGE]: {
+    color: 0x9C27B0, // Purple
+    size: 40, // 2x2 grid blocks
+    gridSize: 2,
+    score: 25,
+    growthAmount: 2,
+    spawnChance: 0.1 // 10% chance (rare)
+  }
+};
+
+// Additional colorful food variants
+export const FOOD_COLORS = [
+  0xFF5722, // Orange-red
+  0x4CAF50, // Green
+  0x2196F3, // Blue
+  0xFFEB3B, // Yellow
+  0xE91E63, // Pink
+  0x00BCD4, // Cyan
+  0xFF9800, // Orange
+  0x795548  // Brown
+];
+
+// Legacy constants for backward compatibility
+export const FOOD_COLOR = FOOD_TYPES[FoodType.SMALL].color;
+export const FOOD_SIZE = FOOD_TYPES[FoodType.SMALL].size;
+export const FOOD_SCORE = FOOD_TYPES[FoodType.SMALL].score;
 
 // Camera settings
 export const CAMERA_FOLLOW_SPEED = 0.05; // Lag factor for smooth following

@@ -2,19 +2,16 @@ import Phaser from 'phaser';
 import {
   GRID_SIZE,
   SNAKE_INITIAL_LENGTH,
-  SNAKE_SPEED,
-  SNAKE_TURN_SPEED,
   SNAKE_COLOR,
   SNAKE_HEAD_COLOR,
-  Direction,
-  DIRECTION_VECTORS,
+  BASE_SPEED,
+  BOOST_MULTIPLIER,
+  ROTATION_SPEED,
   WORLD_WIDTH,
   WORLD_HEIGHT
 } from './config';
 
 interface SnakeSegment {
-  gridX: number;
-  gridY: number;
   x: number;
   y: number;
   graphics: Phaser.GameObjects.Graphics;
@@ -23,11 +20,10 @@ interface SnakeSegment {
 export class Snake {
   private scene: Phaser.Scene;
   private segments: SnakeSegment[] = [];
-  private direction: Direction = Direction.RIGHT;
-  private nextDirection: Direction = Direction.RIGHT;
-  private lastMoveTime: number = 0;
-  private targetDirection: number = 0; // For smooth turning
-  private currentDirection: number = 0; // Current visual direction
+  private angle: number = 0; // Current movement angle in radians
+  private targetAngle: number = 0; // Target angle to rotate towards
+  private speed: number = BASE_SPEED;
+  private isBoosting: boolean = false;
 
   constructor(scene: Phaser.Scene, startX: number, startY: number) {
     this.scene = scene;
@@ -36,16 +32,15 @@ export class Snake {
 
   private initializeSnake(startX: number, startY: number): void {
     // Create initial snake segments
+    const startPixelX = startX * GRID_SIZE + GRID_SIZE / 2;
+    const startPixelY = startY * GRID_SIZE + GRID_SIZE / 2;
+    
     for (let i = 0; i < SNAKE_INITIAL_LENGTH; i++) {
-      const gridX = startX - i;
-      const gridY = startY;
-      const x = gridX * GRID_SIZE + GRID_SIZE / 2;
-      const y = gridY * GRID_SIZE + GRID_SIZE / 2;
+      const x = startPixelX - i * GRID_SIZE;
+      const y = startPixelY;
 
       const graphics = this.scene.add.graphics();
       const segment: SnakeSegment = {
-        gridX,
-        gridY,
         x,
         y,
         graphics
@@ -54,8 +49,6 @@ export class Snake {
       this.segments.push(segment);
       this.drawSegment(segment, i === 0);
     }
-
-    this.targetDirection = this.currentDirection = this.directionToAngle(this.direction);
   }
 
   private drawSegment(segment: SnakeSegment, isHead: boolean = false): void {
@@ -71,7 +64,7 @@ export class Snake {
       segment.y - size / 2,
       size,
       size,
-      4 // Rounded corners for Chrome-Snake feel
+      4 // Rounded corners
     );
 
     // Add a subtle border for better visibility
@@ -85,89 +78,79 @@ export class Snake {
     );
   }
 
-  private directionToAngle(direction: Direction): number {
-    switch (direction) {
-      case Direction.UP: return -Math.PI / 2;
-      case Direction.RIGHT: return 0;
-      case Direction.DOWN: return Math.PI / 2;
-      case Direction.LEFT: return Math.PI;
-      default: return 0;
-    }
+  public setTargetAngle(angle: number): void {
+    this.targetAngle = angle;
   }
 
-  public setDirection(newDirection: Direction): void {
-    // Prevent immediate reverse direction
-    const oppositeDirection = (this.direction + 2) % 4;
-    if (newDirection !== oppositeDirection) {
-      this.nextDirection = newDirection;
-      this.targetDirection = this.directionToAngle(newDirection);
-    }
+  public setBoosting(boosting: boolean): void {
+    this.isBoosting = boosting;
   }
 
-  public update(time: number): void {
-    // Smooth turning animation
-    this.updateSmoothTurning();
-
-    // Grid-based movement
-    if (time - this.lastMoveTime >= SNAKE_SPEED) {
-      this.move();
-      this.lastMoveTime = time;
-    }
-
-    // Update visual positions for smooth movement
-    this.updateVisualPositions();
-  }
-
-  private updateSmoothTurning(): void {
-    // Smoothly interpolate between current and target direction
-    let angleDiff = this.targetDirection - this.currentDirection;
+  public update(delta: number): void {
+    // Smooth rotation towards target angle
+    this.updateRotation();
     
-    // Handle angle wrapping
-    if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-    if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    // Calculate current speed
+    const currentSpeed = this.isBoosting ? this.speed * BOOST_MULTIPLIER : this.speed;
     
-    this.currentDirection += angleDiff * SNAKE_TURN_SPEED;
-    
-    // Normalize angle
-    if (this.currentDirection > Math.PI) this.currentDirection -= 2 * Math.PI;
-    if (this.currentDirection < -Math.PI) this.currentDirection += 2 * Math.PI;
-  }
-
-  private move(): void {
-    this.direction = this.nextDirection;
+    // Move the head
     const head = this.segments[0];
-    const dirVector = DIRECTION_VECTORS[this.direction];
+    const moveDistance = (currentSpeed * delta) / 1000; // Convert to pixels per frame
     
-    const newGridX = head.gridX + dirVector.x;
-    const newGridY = head.gridY + dirVector.y;
+    const newHeadX = head.x + Math.cos(this.angle) * moveDistance;
+    const newHeadY = head.y + Math.sin(this.angle) * moveDistance;
     
-    // Create new head
-    const newHead: SnakeSegment = {
-      gridX: newGridX,
-      gridY: newGridY,
-      x: newGridX * GRID_SIZE + GRID_SIZE / 2,
-      y: newGridY * GRID_SIZE + GRID_SIZE / 2,
-      graphics: this.scene.add.graphics()
-    };
+    // Update segments (follow the leader)
+    this.updateSegmentPositions(newHeadX, newHeadY);
     
-    this.segments.unshift(newHead);
-    this.drawSegment(newHead, true);
-    
-    // Remove tail (will be added back if growing)
-    const tail = this.segments.pop()!;
-    tail.graphics.destroy();
-    
-    // Redraw old head as body segment
-    if (this.segments.length > 1) {
-      this.drawSegment(this.segments[1], false);
-    }
-  }
-
-  private updateVisualPositions(): void {
-    // Update segment visual positions for smooth rendering
+    // Redraw all segments
     this.segments.forEach((segment, index) => {
       this.drawSegment(segment, index === 0);
     });
+  }
+
+  private updateRotation(): void {
+    // Calculate the shortest angle difference
+    let angleDiff = this.targetAngle - this.angle;
+    
+    // Normalize angle difference to [-π, π]
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    
+    // Smoothly interpolate towards target angle
+    this.angle += angleDiff * ROTATION_SPEED;
+    
+    // Normalize angle to [-π, π]
+    while (this.angle > Math.PI) this.angle -= 2 * Math.PI;
+    while (this.angle < -Math.PI) this.angle += 2 * Math.PI;
+  }
+
+  private updateSegmentPositions(newHeadX: number, newHeadY: number): void {
+    // Store previous positions
+    const prevPositions = this.segments.map(segment => ({ x: segment.x, y: segment.y }));
+    
+    // Update head position
+    this.segments[0].x = newHeadX;
+    this.segments[0].y = newHeadY;
+    
+    // Update body segments to follow
+    for (let i = 1; i < this.segments.length; i++) {
+      const currentSegment = this.segments[i];
+      const targetSegment = this.segments[i - 1];
+      
+      // Calculate distance to the segment in front
+      const dx = targetSegment.x - currentSegment.x;
+      const dy = targetSegment.y - currentSegment.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // If too far, move closer
+      const segmentDistance = GRID_SIZE * 0.8; // Slightly closer than grid size
+      if (distance > segmentDistance) {
+        const ratio = segmentDistance / distance;
+        currentSegment.x = targetSegment.x - dx * ratio;
+        currentSegment.y = targetSegment.y - dy * ratio;
+      }
+    }
   }
 
   public grow(): void {
@@ -175,12 +158,25 @@ export class Snake {
     const tail = this.segments[this.segments.length - 1];
     const prevTail = this.segments[this.segments.length - 2] || tail;
     
+    // Calculate position behind the tail
+    const dx = tail.x - prevTail.x;
+    const dy = tail.y - prevTail.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    let newX = tail.x;
+    let newY = tail.y;
+    
+    if (distance > 0) {
+      const ratio = GRID_SIZE / distance;
+      newX = tail.x + dx * ratio;
+      newY = tail.y + dy * ratio;
+    }
+    
+    const graphics = this.scene.add.graphics();
     const newSegment: SnakeSegment = {
-      gridX: tail.gridX,
-      gridY: tail.gridY,
-      x: tail.x,
-      y: tail.y,
-      graphics: this.scene.add.graphics()
+      x: newX,
+      y: newY,
+      graphics
     };
     
     this.segments.push(newSegment);
@@ -189,11 +185,16 @@ export class Snake {
 
   public checkSelfCollision(): boolean {
     const head = this.segments[0];
+    const headRadius = GRID_SIZE / 2;
     
-    // Check collision with body (skip head)
-    for (let i = 1; i < this.segments.length; i++) {
+    // Check collision with body segments (skip first few to avoid immediate collision)
+    for (let i = 4; i < this.segments.length; i++) {
       const segment = this.segments[i];
-      if (head.gridX === segment.gridX && head.gridY === segment.gridY) {
+      const dx = head.x - segment.x;
+      const dy = head.y - segment.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < headRadius) {
         return true;
       }
     }
@@ -203,11 +204,13 @@ export class Snake {
 
   public checkWallCollision(): boolean {
     const head = this.segments[0];
+    const margin = GRID_SIZE / 2;
+    
     return (
-      head.gridX < 0 ||
-      head.gridX >= WORLD_WIDTH / GRID_SIZE ||
-      head.gridY < 0 ||
-      head.gridY >= WORLD_HEIGHT / GRID_SIZE
+      head.x < margin ||
+      head.x >= WORLD_WIDTH - margin ||
+      head.y < margin ||
+      head.y >= WORLD_HEIGHT - margin
     );
   }
 
@@ -218,7 +221,10 @@ export class Snake {
 
   public getHeadGridPosition(): { gridX: number; gridY: number } {
     const head = this.segments[0];
-    return { gridX: head.gridX, gridY: head.gridY };
+    return { 
+      gridX: Math.floor(head.x / GRID_SIZE), 
+      gridY: Math.floor(head.y / GRID_SIZE) 
+    };
   }
 
   public getLength(): number {
@@ -227,8 +233,8 @@ export class Snake {
 
   public getAllSegments(): Array<{ gridX: number; gridY: number }> {
     return this.segments.map(segment => ({
-      gridX: segment.gridX,
-      gridY: segment.gridY
+      gridX: Math.floor(segment.x / GRID_SIZE),
+      gridY: Math.floor(segment.y / GRID_SIZE)
     }));
   }
 
