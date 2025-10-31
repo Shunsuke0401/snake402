@@ -219,15 +219,23 @@ export class FoodManager {
       if (sprite.active) {
         const foodData = sprite.getData('foodData') as FoodData;
         if (foodData) {
-          // Check if snake head overlaps with any part of the food
-          for (let dx = 0; dx < foodData.gridSize; dx++) {
-            for (let dy = 0; dy < foodData.gridSize; dy++) {
-              if (snakeHeadGridX === foodData.gridX + dx && snakeHeadGridY === foodData.gridY + dy) {
-                eatenFood = foodData;
-                this.recycleFoodSprite(sprite, foodData);
-                return;
-              }
-            }
+          // Calculate the center of the food
+          const foodCenterX = foodData.gridX + foodData.gridSize / 2;
+          const foodCenterY = foodData.gridY + foodData.gridSize / 2;
+          
+          // Calculate distance between snake head and food center
+          const dx = snakeHeadGridX + 0.5 - foodCenterX; // +0.5 to get snake head center
+          const dy = snakeHeadGridY + 0.5 - foodCenterY;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          
+          // More forgiving collision detection - allow eating if within reasonable distance
+          // Base collision radius is half the food size plus some tolerance
+          const collisionRadius = (foodData.gridSize / 2) + 0.7; // 0.7 grid units tolerance
+          
+          if (distance <= collisionRadius) {
+            eatenFood = foodData;
+            this.recycleFoodSprite(sprite, foodData);
+            return;
           }
         }
       }
