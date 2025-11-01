@@ -200,6 +200,11 @@ class GameWorld {
     // Check collisions
     this.checkCollisions();
 
+    // Update segments again after collision detection to reflect length changes
+    for (const player of this.players.values()) {
+      this.updatePlayerSegments(player);
+    }
+
     // Maintain food count
     this.maintainFood();
   }
@@ -255,19 +260,13 @@ class GameWorld {
   }
 
   private checkCollisions(): void {
-    const playerCount = this.players.size;
-    const foodCount = this.food.size;
-    
-    // Only log every 30 ticks (once per second) to reduce spam
-    if (playerCount > 0 && foodCount > 0 && Date.now() % 1000 < 33) {
-      console.log(`Checking collisions: ${playerCount} players, ${foodCount} food items`);
-      
-      // Log first player position for debugging
+    // Debug: Log collision check for first player every 2 seconds
+    if (this.players.size > 0 && Date.now() % 2000 < TICK_INTERVAL * 2) {
       const firstPlayer = Array.from(this.players.values())[0];
-      if (firstPlayer) {
-        console.log(`Player ${firstPlayer.id} position: (${firstPlayer.x.toFixed(1)}, ${firstPlayer.y.toFixed(1)})`);
-        
-        // Log nearest food item
+      console.log(`🔍 COLLISION CHECK: Player ${firstPlayer.id} at (${firstPlayer.x.toFixed(1)}, ${firstPlayer.y.toFixed(1)}), length=${firstPlayer.length}, segments=${firstPlayer.segments.length}`);
+      console.log(`🔍 FOOD COUNT: ${this.food.size} food items available`);
+      
+      if (this.food.size > 0) {
         let nearestFood = null;
         let nearestDistance = Infinity;
         for (const food of this.food.values()) {
@@ -280,7 +279,7 @@ class GameWorld {
           }
         }
         if (nearestFood) {
-          console.log(`Nearest food at (${nearestFood.x}, ${nearestFood.y}), distance: ${nearestDistance.toFixed(1)}, collision radius: ${(nearestFood.size / 2 + GRID_SIZE).toFixed(1)}`);
+          console.log(`🔍 NEAREST FOOD: at (${nearestFood.x}, ${nearestFood.y}), distance: ${nearestDistance.toFixed(1)}, collision radius: ${(nearestFood.size / 2 + GRID_SIZE * 2).toFixed(1)}`);
         }
       }
     }
@@ -292,18 +291,22 @@ class GameWorld {
           Math.pow(player.x - food.x, 2) + Math.pow(player.y - food.y, 2)
         );
 
-        const collisionRadius = food.size / 2 + GRID_SIZE; // More generous collision detection
+        const collisionRadius = food.size / 2 + GRID_SIZE * 2; // More generous collision detection
         if (distance <= collisionRadius) {
           // Player ate food
           const oldLength = player.length;
           const oldSegmentCount = player.segments.length;
-          console.log(`🍎 Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius})`);
-          console.log(`   Before: length=${oldLength}, segments=${oldSegmentCount}, growth=${food.growthAmount}`);
+          console.log(`🍎 FOOD COLLISION: Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius})`);
+          console.log(`🍎 BEFORE: length=${oldLength}, segments=${oldSegmentCount}, growth=${food.growthAmount}`);
           
           player.score += food.score;
           player.length += food.growthAmount;
           
-          console.log(`   After: length=${player.length}, segments=${player.segments.length}`);
+          // IMMEDIATELY update segments to match new length in the same tick
+          this.updatePlayerSegments(player);
+          
+          console.log(`🍎 AFTER: length=${player.length}, segments=${player.segments.length}`);
+          console.log(`🍎 FOOD REMOVED: ${foodId} at (${food.x}, ${food.y})`);
           
           // Remove food and broadcast
           this.food.delete(foodId);

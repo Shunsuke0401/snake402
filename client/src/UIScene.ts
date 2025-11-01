@@ -124,10 +124,17 @@ export class UIScene extends Phaser.Scene {
     }
   }
 
-  public updateLength(newLength: number): void {
-    this.length = newLength;
-    if (this.lengthText && this.lengthText.setText) {
-      this.lengthText.setText(`Length: ${this.length}`);
+  public updateLength(newLength: number | string): void {
+    if (typeof newLength === 'number') {
+      this.length = newLength;
+      if (this.lengthText && this.lengthText.setText) {
+        this.lengthText.setText(`Length: ${this.length}`);
+      }
+    } else {
+      // For debugging - show custom string
+      if (this.lengthText && this.lengthText.setText) {
+        this.lengthText.setText(`Length: ${newLength}`);
+      }
     }
   }
 

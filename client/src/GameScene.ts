@@ -51,7 +51,7 @@ export class GameScene extends Phaser.Scene {
   private isConnected: boolean = false;
   private playerId: string | null = null;
   private remotePlayers: Map<string, RemotePlayerVisual> = new Map();
-  private networkFood: Map<string, Phaser.GameObjects.Graphics> = new Map();
+  private networkFood: Map<string, { graphics: Phaser.GameObjects.Graphics; data: NetworkFoodItem }> = new Map();
   private hasReceivedInitialFood: boolean = false;
   
   // Input state for networking
@@ -230,7 +230,9 @@ export class GameScene extends Phaser.Scene {
         const localPlayer = players.find(p => p.id === this.playerId);
         if (localPlayer) {
           this.uiScene.updateScore(localPlayer.score);
-          this.uiScene.updateLength(localPlayer.length);
+          // Show both server length and actual client length for debugging
+          const clientLength = this.snake.getLength();
+          this.uiScene.updateLength(`${localPlayer.length} (client: ${clientLength})`);
           
           // Store server position for reference
           if (localPlayer.segments.length > 0) {
@@ -389,39 +391,10 @@ export class GameScene extends Phaser.Scene {
   }
   
   private checkNetworkFoodCollisions(): void {
-    if (!this.snake || !this.useLocalPrediction) {
-      return;
-    }
-    
-    const headPos = this.snake.getHeadGridPosition();
-    const headRadius = GRID_SIZE / 2;
-    
-    // Check collision with network food
-    for (const [foodId, foodGraphics] of this.networkFood) {
-      // Get food position from graphics
-      const foodX = foodGraphics.x;
-      const foodY = foodGraphics.y;
-      const foodGridX = Math.floor(foodX / GRID_SIZE);
-      const foodGridY = Math.floor(foodY / GRID_SIZE);
-      
-      // Check if head is close enough to food
-      const distance = Math.sqrt(
-        Math.pow(headPos.gridX - foodGridX, 2) + 
-        Math.pow(headPos.gridY - foodGridY, 2)
-      );
-      
-      if (distance < 1.5) { // Within 1.5 grid units
-        console.log(`🍎 Local food collision detected: ${foodId} at (${foodGridX}, ${foodGridY})`);
-        
-        // Immediately grow the snake for responsive feedback
-        this.snake.grow();
-        
-        // Remove the food visually (server will confirm)
-        this.removeNetworkFood(foodId);
-        
-        break; // Only eat one food per frame
-      }
-    }
+    // Client-side collision detection removed to prevent inconsistencies
+    // Server is now fully authoritative for food collisions
+    // This prevents race conditions and ensures consistent behavior
+    return;
   }
 
   // Timer removed - game now runs continuously without time limit
@@ -474,8 +447,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     
+    console.log(`🔄 SERVER LENGTH UPDATE: Server=${serverLength}, Client=${this.snake.getLength()}, LastKnown=${this.lastKnownServerLength}`);
+    
     // Initialize if this is the first update
     if (this.lastKnownServerLength === 0) {
+      console.log(`🔄 INITIALIZING: Setting lastKnownServerLength to ${serverLength}`);
       this.lastKnownServerLength = serverLength;
       return;
     }
@@ -483,16 +459,18 @@ export class GameScene extends Phaser.Scene {
     // Check if snake should grow
     const lengthDifference = serverLength - this.lastKnownServerLength;
     if (lengthDifference > 0) {
-      console.log(`🐍 Growing snake locally: ${this.lastKnownServerLength} -> ${serverLength} (+${lengthDifference})`);
+      console.log(`🐍 GROWING: ${this.lastKnownServerLength} -> ${serverLength} (+${lengthDifference})`);
+      console.log(`🐍 BEFORE GROW: Client segments = ${this.snake.getLength()}`);
       
       // Grow the snake locally for each segment increase
       for (let i = 0; i < lengthDifference; i++) {
         this.snake.grow();
       }
       
+      console.log(`🐍 AFTER GROW: Client segments = ${this.snake.getLength()}`);
       this.lastKnownServerLength = serverLength;
     } else if (lengthDifference < 0) {
-      console.log(`🐍 Shrinking snake locally: ${this.lastKnownServerLength} -> ${serverLength} (${lengthDifference})`);
+      console.log(`🐍 SHRINKING: ${this.lastKnownServerLength} -> ${serverLength} (${lengthDifference})`);
       
       // Shrink the snake locally for each segment decrease
       for (let i = 0; i < Math.abs(lengthDifference); i++) {
@@ -500,11 +478,13 @@ export class GameScene extends Phaser.Scene {
       }
       
       this.lastKnownServerLength = serverLength;
+    } else {
+      console.log(`🔄 NO CHANGE: Server and client lengths match at ${serverLength}`);
     }
   }
 
 
-  
+
 
 
   private updateRemotePlayers(players: NetworkPlayerState[]): void {
@@ -596,17 +576,17 @@ export class GameScene extends Phaser.Scene {
     const graphics = this.add.graphics();
     graphics.fillStyle(food.color);
     graphics.fillCircle(food.x, food.y, food.size / 2);
-    this.networkFood.set(food.id, graphics);
+    this.networkFood.set(food.id, { graphics, data: food });
   }
 
   private removeNetworkFood(foodId: string): void {
     console.log(`🍎 Attempting to remove food ${foodId} from client. Current food count: ${this.networkFood.size}`);
     console.log(`🍎 Available food IDs:`, Array.from(this.networkFood.keys()).slice(0, 5));
     
-    const graphics = this.networkFood.get(foodId);
-    if (graphics) {
+    const foodItem = this.networkFood.get(foodId);
+    if (foodItem) {
       console.log(`🍎 Successfully removing food ${foodId} from client`);
-      graphics.destroy();
+      foodItem.graphics.destroy();
       this.networkFood.delete(foodId);
       console.log(`🍎 Food removed. New count: ${this.networkFood.size}`);
     } else {
