@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { Snake } from './Snake';
 import { FoodManager } from './Food';
 import { UIScene } from './UIScene';
+import { NetClient, NetworkPlayerState, NetworkFoodItem } from './net/NetClient';
 import {
   WORLD_WIDTH,
   WORLD_HEIGHT,
@@ -10,7 +11,6 @@ import {
   GRID_SIZE,
   CAMERA_FOLLOW_SPEED,
   CAMERA_ZOOM,
-  GAME_DURATION,
   ARENA_CENTER_X,
   ARENA_CENTER_Y,
   ARENA_RADIUS,
@@ -19,15 +19,24 @@ import {
   ARENA_WARNING_COLOR
 } from './config';
 
+// Remote player visual representation
+interface RemotePlayerVisual {
+  id: string;
+  graphics: Phaser.GameObjects.Graphics;
+  segments: Phaser.GameObjects.Graphics[];
+}
+
 export class GameScene extends Phaser.Scene {
   private snake!: Snake;
   private foodManager!: FoodManager;
   private uiScene!: UIScene;
+  private netClient!: NetClient;
   
   private gameStartTime: number = 0;
   private score: number = 0;
   private isGameActive: boolean = true;
   private fpsText!: Phaser.GameObjects.Text;
+  private connectionText!: Phaser.GameObjects.Text;
   
   // Mouse tracking for cursor behavior
   private lastMouseX: number = 0;
@@ -37,6 +46,16 @@ export class GameScene extends Phaser.Scene {
   // Arena boundary graphics
   private arenaBoundary!: Phaser.GameObjects.Graphics;
   private arenaWarning!: Phaser.GameObjects.Graphics;
+  
+  // Networking state
+  private isConnected: boolean = false;
+  private playerId: string | null = null;
+  private remotePlayers: Map<string, RemotePlayerVisual> = new Map();
+  private networkFood: Map<string, Phaser.GameObjects.Graphics> = new Map();
+  
+  // Input state for networking
+  private currentAngle: number = 0;
+  private currentThrottle: number = 0;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -45,6 +64,7 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.setupWorld();
     this.setupInput();
+    this.setupNetworking();
     this.setupGame();
     this.setupCamera();
     this.setupUI();
@@ -120,25 +140,86 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private setupGame(): void {
-    // Initialize snake at center of world
-    const startX = Math.floor(WORLD_WIDTH / GRID_SIZE / 2);
-    const startY = Math.floor(WORLD_HEIGHT / GRID_SIZE / 2);
-    this.snake = new Snake(this, startX, startY);
+  private setupNetworking(): void {
+    this.netClient = new NetClient();
     
-    // Initialize food manager
+    // Set up event handlers
+    this.netClient.on('connected', (playerId: string, spawnPosition: { x: number; y: number }) => {
+      console.log(`Connected as player ${playerId}`);
+      this.playerId = playerId;
+      this.isConnected = true;
+      this.updateConnectionStatus('Connected');
+      
+      // Initialize local snake at server-provided spawn position
+      this.snake = new Snake(this, 
+        Math.floor(spawnPosition.x / GRID_SIZE), 
+        Math.floor(spawnPosition.y / GRID_SIZE)
+      );
+      this.setupCamera();
+    });
+    
+    this.netClient.on('disconnected', () => {
+      console.log('Disconnected from server');
+      this.isConnected = false;
+      this.playerId = null;
+      this.updateConnectionStatus('Disconnected - Reconnecting...');
+      this.clearRemotePlayers();
+      this.clearNetworkFood();
+    });
+    
+    this.netClient.on('playerSpawned', (playerId: string, position: { x: number; y: number }) => {
+      console.log(`Player ${playerId} spawned`);
+      // Remote player spawning is handled in state updates
+    });
+    
+    this.netClient.on('playerDied', (playerId: string, reason: string) => {
+      console.log(`Player ${playerId} died: ${reason}`);
+      this.removeRemotePlayer(playerId);
+    });
+    
+    this.netClient.on('foodUpdate', (action: 'spawn' | 'despawn', food: NetworkFoodItem) => {
+      if (action === 'spawn') {
+        this.addNetworkFood(food);
+      } else {
+        this.removeNetworkFood(food.id);
+      }
+    });
+    
+    this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
+      this.updateRemotePlayers(players);
+      this.updateNetworkFood(food);
+    });
+    
+    this.netClient.on('error', (error: string) => {
+      console.error('Network error:', error);
+      this.updateConnectionStatus(`Error: ${error}`);
+    });
+    
+    // Connect to server
+    this.netClient.connect().catch((error) => {
+      console.error('Failed to connect to server:', error);
+      this.updateConnectionStatus('Failed to connect');
+    });
+  }
+
+  private setupGame(): void {
+    // Initialize food manager (for local food rendering, but networked food will override)
     this.foodManager = new FoodManager(this);
     
     // Reset game state
     this.score = 0;
     this.isGameActive = true;
+    
+    // Note: Snake initialization is now handled in networking connection
   }
 
   private setupCamera(): void {
-    // Set camera to follow snake with smooth movement
-    const snakeHead = this.snake.getHeadPosition();
-    this.cameras.main.setZoom(CAMERA_ZOOM);
-    this.cameras.main.centerOn(snakeHead.x, snakeHead.y);
+    if (this.snake) {
+      // Set camera to follow snake with smooth movement
+      const snakeHead = this.snake.getHeadPosition();
+      this.cameras.main.setZoom(CAMERA_ZOOM);
+      this.cameras.main.centerOn(snakeHead.x, snakeHead.y);
+    }
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
   }
 
@@ -154,6 +235,14 @@ export class GameScene extends Phaser.Scene {
       backgroundColor: 'rgba(0, 0, 0, 0.7)',
       padding: { x: 5, y: 2 }
     }).setScrollFactor(0).setDepth(150);
+    
+    // Add connection status
+    this.connectionText = this.add.text(10, 35, 'Connecting...', { 
+      fontSize: '14px', 
+      color: '#ffff00',
+      backgroundColor: 'rgba(0, 0, 0, 0.7)',
+      padding: { x: 5, y: 2 }
+    }).setScrollFactor(0).setDepth(150);
   }
 
   private setupEventListeners(): void {
@@ -163,7 +252,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleInput(): void {
-    if (!this.isGameActive) return;
+    if (!this.isGameActive || !this.isConnected || !this.snake) return;
     
     const pointer = this.input.activePointer;
     
@@ -181,98 +270,188 @@ export class GameScene extends Phaser.Scene {
       const dy = worldY - headPos.y;
       const targetAngle = Math.atan2(dy, dx);
       
-      // Set snake target angle
+      // Set snake target angle (for local prediction)
       this.snake.setTargetAngle(targetAngle);
+      this.currentAngle = targetAngle;
       
       // Reset mouse moved flag
       this.hasMouseMoved = false;
     }
     
-    // Always handle boosting regardless of mouse movement
-    this.snake.setBoosting(pointer.isDown);
+    // Handle boosting
+    const isBoosting = pointer.isDown;
+    this.snake.setBoosting(isBoosting);
+    this.currentThrottle = isBoosting ? 1 : 0;
+    
+    // Send input to server
+    this.netClient.sendInput(this.currentAngle, this.currentThrottle);
   }
 
   private updateCamera(): void {
+    if (!this.snake) return;
+    
     const snakeHead = this.snake.getHeadPosition();
     const camera = this.cameras.main;
     
     // Smooth camera following with lag
     const targetX = snakeHead.x;
     const targetY = snakeHead.y;
+    
     const currentX = camera.scrollX + camera.width / 2;
     const currentY = camera.scrollY + camera.height / 2;
     
-    const newX = Phaser.Math.Linear(currentX, targetX, CAMERA_FOLLOW_SPEED);
-    const newY = Phaser.Math.Linear(currentY, targetY, CAMERA_FOLLOW_SPEED);
+    const newX = currentX + (targetX - currentX) * CAMERA_FOLLOW_SPEED;
+    const newY = currentY + (targetY - currentY) * CAMERA_FOLLOW_SPEED;
     
     camera.centerOn(newX, newY);
   }
 
   private checkCollisions(): void {
-    if (!this.isGameActive) return;
+    if (!this.isGameActive || !this.snake) return;
     
-    const headGridPos = this.snake.getHeadGridPosition();
-    
-    // Check food collision
-    const eatenFood = this.foodManager.checkCollision(headGridPos.gridX, headGridPos.gridY);
-    if (eatenFood) {
-      // Grow snake based on food's growth amount
-      for (let i = 0; i < eatenFood.growthAmount; i++) {
-        this.snake.grow();
-      }
-      this.score += eatenFood.score;
-      this.uiScene.updateScore(this.score);
-      this.uiScene.updateLength(this.snake.getLength());
-    }
-    
-    // Check arena boundary collision
-    const head = this.snake.getHeadPosition();
-    const dx = head.x - ARENA_CENTER_X;
-    const dy = head.y - ARENA_CENTER_Y;
-    const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
-    
-    if (distanceFromCenter >= ARENA_RADIUS) {
-      this.gameOver('Hit the wall!');
-      return;
-    }
-    
-    // Self collision disabled - players can pass through their own body
+    // Note: Collision detection is now handled server-side
+    // This method is kept for potential local prediction or effects
   }
 
-  private updateTimer(): void {
-    if (!this.isGameActive) return;
-    
-    const elapsed = (this.time.now - this.gameStartTime) / 1000;
-    const timeRemaining = GAME_DURATION - elapsed;
-    
-    this.uiScene.updateTimer(timeRemaining);
-  }
+  // Timer removed - game now runs continuously without time limit
 
   private checkArenaProximity(): void {
-    const head = this.snake.getHeadPosition();
+    if (!this.snake) return;
     
-    // Calculate distance from snake head to arena center
-    const dx = head.x - ARENA_CENTER_X;
-    const dy = head.y - ARENA_CENTER_Y;
-    const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
+    const headPos = this.snake.getHeadPosition();
+    const distanceFromCenter = Math.sqrt(
+      Math.pow(headPos.x - ARENA_CENTER_X, 2) + 
+      Math.pow(headPos.y - ARENA_CENTER_Y, 2)
+    );
     
-    // Check if snake is approaching the boundary
     const distanceFromBoundary = ARENA_RADIUS - distanceFromCenter;
     
     if (distanceFromBoundary <= ARENA_WARNING_DISTANCE) {
-      // Show warning circle when approaching boundary
+      // Show warning
       this.arenaWarning.setVisible(true);
       
-      // Show red boundary when very close
-      if (distanceFromBoundary <= 100) {
+      if (distanceFromBoundary <= 0) {
+        // Show boundary
         this.arenaBoundary.setVisible(true);
       } else {
         this.arenaBoundary.setVisible(false);
       }
     } else {
-      // Hide both circles when far from boundary
+      // Hide both warning and boundary
       this.arenaWarning.setVisible(false);
       this.arenaBoundary.setVisible(false);
+    }
+  }
+
+  private updateConnectionStatus(status: string): void {
+    if (this.connectionText) {
+      this.connectionText.setText(status);
+      
+      // Color coding
+      if (status.includes('Connected')) {
+        this.connectionText.setColor('#00ff00');
+      } else if (status.includes('Error') || status.includes('Failed')) {
+        this.connectionText.setColor('#ff0000');
+      } else {
+        this.connectionText.setColor('#ffff00');
+      }
+    }
+  }
+
+  private updateRemotePlayers(players: NetworkPlayerState[]): void {
+    // Update existing remote players and add new ones
+    for (const playerState of players) {
+      if (playerState.id === this.playerId) continue; // Skip own player
+      
+      let remotePlayer = this.remotePlayers.get(playerState.id);
+      
+      if (!remotePlayer) {
+        // Create new remote player visual
+        remotePlayer = this.createRemotePlayerVisual(playerState.id);
+        this.remotePlayers.set(playerState.id, remotePlayer);
+      }
+      
+      // Update visual representation
+      this.updateRemotePlayerVisual(remotePlayer, playerState);
+    }
+    
+    // Remove players that are no longer in the state
+    const currentPlayerIds = new Set(players.map(p => p.id));
+    for (const [playerId] of this.remotePlayers) {
+      if (!currentPlayerIds.has(playerId)) {
+        this.removeRemotePlayer(playerId);
+      }
+    }
+  }
+
+  private createRemotePlayerVisual(playerId: string): RemotePlayerVisual {
+    const graphics = this.add.graphics();
+    return {
+      id: playerId,
+      graphics,
+      segments: []
+    };
+  }
+
+  private updateRemotePlayerVisual(remotePlayer: RemotePlayerVisual, state: NetworkPlayerState): void {
+    // Clear previous drawing
+    remotePlayer.graphics.clear();
+    
+    // Draw snake segments
+    for (let i = 0; i < state.segments.length; i++) {
+      const segment = state.segments[i];
+      const isHead = i === 0;
+      
+      // Use different colors for remote players
+      const color = isHead ? 0x2196F3 : 0x64B5F6; // Blue tones for remote players
+      
+      remotePlayer.graphics.fillStyle(color);
+      remotePlayer.graphics.fillCircle(segment.x, segment.y, GRID_SIZE / 2);
+    }
+  }
+
+  private removeRemotePlayer(playerId: string): void {
+    const remotePlayer = this.remotePlayers.get(playerId);
+    if (remotePlayer) {
+      remotePlayer.graphics.destroy();
+      this.remotePlayers.delete(playerId);
+    }
+  }
+
+  private clearRemotePlayers(): void {
+    for (const [playerId] of this.remotePlayers) {
+      this.removeRemotePlayer(playerId);
+    }
+  }
+
+  private updateNetworkFood(food: NetworkFoodItem[]): void {
+    // Clear existing network food
+    this.clearNetworkFood();
+    
+    // Add all network food
+    for (const foodItem of food) {
+      this.addNetworkFood(foodItem);
+    }
+  }
+
+  private addNetworkFood(food: NetworkFoodItem): void {
+    const graphics = this.add.graphics();
+    graphics.fillStyle(food.color);
+    graphics.fillCircle(food.x, food.y, food.size / 2);
+    this.networkFood.set(food.id, graphics);
+  }
+
+  private removeNetworkFood(foodId: string): void {
+    const graphics = this.networkFood.get(foodId);
+    if (graphics) {
+      graphics.destroy();
+      this.networkFood.delete(foodId);
+    }
+  }
+
+  private clearNetworkFood(): void {
+    for (const [foodId] of this.networkFood) {
+      this.removeNetworkFood(foodId);
     }
   }
 
@@ -286,16 +465,24 @@ export class GameScene extends Phaser.Scene {
   }
 
   private restartGame(): void {
-    // Destroy current game objects
-    this.snake.destroy();
+    // Disconnect and reconnect for a fresh start
+    this.netClient.disconnect();
+    
+    // Clear all game objects
+    if (this.snake) {
+      this.snake.destroy();
+    }
     this.foodManager.destroy();
+    this.clearRemotePlayers();
+    this.clearNetworkFood();
     
-    // Reset game
-    this.setupGame();
-    this.setupCamera();
-    
-    // Reset timer
+    // Reset game state
+    this.score = 0;
+    this.isGameActive = true;
     this.gameStartTime = this.time.now;
+    
+    // Reconnect to server
+    this.setupNetworking();
   }
 
   update(time: number, delta: number): void {
@@ -304,26 +491,34 @@ export class GameScene extends Phaser.Scene {
     
     if (!this.isGameActive) return;
     
+    // Update networking
+    if (this.netClient) {
+      this.netClient.update(delta);
+    }
+    
     // Handle input
     this.handleInput();
     
-    // Update game objects
-    this.snake.update(delta);
+    // Update local snake (for prediction)
+    if (this.snake) {
+      this.snake.update(delta);
+    }
+    
+    // Update food manager (though network food takes precedence)
     this.foodManager.update(time);
     
     // Update camera
     this.updateCamera();
     
-    // Check collisions
+    // Check collisions (local prediction)
     this.checkCollisions();
     
     // Check arena proximity
     this.checkArenaProximity();
     
-    // Update timer
-    this.updateTimer();
-    
-    // Update food manager with snake positions to avoid spawning on snake
-    this.foodManager.updateSnakePositions(this.snake.getAllSegments());
+    // Update food manager with snake positions
+    if (this.snake) {
+      this.foodManager.updateSnakePositions(this.snake.getAllSegments());
+    }
   }
 }

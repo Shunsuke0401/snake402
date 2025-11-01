@@ -4,7 +4,6 @@ import {
   UI_FONT_FAMILY,
   UI_COLOR,
   UI_BACKGROUND_COLOR,
-  GAME_DURATION,
   INITIAL_SCORE,
   KEYS
 } from './config';
@@ -12,7 +11,6 @@ import {
 export class UIScene extends Phaser.Scene {
   private scoreText!: Phaser.GameObjects.Text;
   private lengthText!: Phaser.GameObjects.Text;
-  private timerText!: Phaser.GameObjects.Text;
   private gameOverOverlay!: Phaser.GameObjects.Container;
   private gameOverBackground!: Phaser.GameObjects.Graphics;
   private gameOverTitle!: Phaser.GameObjects.Text;
@@ -21,7 +19,6 @@ export class UIScene extends Phaser.Scene {
   
   private score: number = INITIAL_SCORE;
   private length: number = 3;
-  private timeRemaining: number = GAME_DURATION;
   private isGameOver: boolean = false;
 
   constructor() {
@@ -35,7 +32,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   private createUI(): void {
-    const { width, height } = this.cameras.main;
+    // Timer removed - only score and length displays remain
     
     // Score display (top-left)
     this.scoreText = this.add.text(20, 20, `Score: ${this.score}`, {
@@ -55,14 +52,7 @@ export class UIScene extends Phaser.Scene {
       padding: { x: 10, y: 5 }
     }).setScrollFactor(0).setDepth(100);
 
-    // Timer display (top-right)
-    this.timerText = this.add.text(width - 20, 20, `Time: ${this.timeRemaining}s`, {
-      fontSize: UI_FONT_SIZE,
-      fontFamily: UI_FONT_FAMILY,
-      color: UI_COLOR,
-      backgroundColor: UI_BACKGROUND_COLOR,
-      padding: { x: 10, y: 5 }
-    }).setOrigin(1, 0).setScrollFactor(0).setDepth(100);
+    // Timer removed - game now runs continuously
   }
 
   private createGameOverOverlay(): void {
@@ -137,25 +127,7 @@ export class UIScene extends Phaser.Scene {
     this.lengthText.setText(`Length: ${this.length}`);
   }
 
-  public updateTimer(timeRemaining: number): void {
-    this.timeRemaining = Math.max(0, Math.ceil(timeRemaining));
-    
-    // Change color when time is running low
-    let color = UI_COLOR;
-    if (this.timeRemaining <= 10) {
-      color = '#ff4444'; // Red when <= 10 seconds
-    } else if (this.timeRemaining <= 30) {
-      color = '#ffaa44'; // Orange when <= 30 seconds
-    }
-    
-    this.timerText.setColor(color);
-    this.timerText.setText(`Time: ${this.timeRemaining}s`);
-    
-    // Trigger game over when timer reaches 0
-    if (this.timeRemaining <= 0 && !this.isGameOver) {
-      this.showGameOver('Time\'s up!');
-    }
-  }
+  // Timer functionality removed - game now runs continuously
 
   public showGameOver(reason: string = 'Game Over'): void {
     this.isGameOver = true;
@@ -186,12 +158,10 @@ export class UIScene extends Phaser.Scene {
     // Reset UI values
     this.score = INITIAL_SCORE;
     this.length = 3;
-    this.timeRemaining = GAME_DURATION;
     
     // Update displays
     this.updateScore(this.score);
     this.updateLength(this.length);
-    this.updateTimer(this.timeRemaining);
     
     // Hide overlay with animation
     this.tweens.add({
@@ -216,9 +186,7 @@ export class UIScene extends Phaser.Scene {
     return this.length;
   }
 
-  public getTimeRemaining(): number {
-    return this.timeRemaining;
-  }
+  // Timer functionality removed
 
   public isGameOverState(): boolean {
     return this.isGameOver;
@@ -233,10 +201,7 @@ export class UIScene extends Phaser.Scene {
       this.gameOverBackground.fillRect(0, 0, width, height);
     }
     
-    // Reposition timer text
-    if (this.timerText) {
-      this.timerText.setPosition(width - 20, 20);
-    }
+    // Timer text removed
     
     // Reposition game over elements
     if (this.gameOverTitle) {

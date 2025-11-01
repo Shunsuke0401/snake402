@@ -92,7 +92,7 @@ export const CAMERA_FOLLOW_SPEED = 0.05; // Lag factor for smooth following
 export const CAMERA_ZOOM = 1;
 
 // Game settings
-export const GAME_DURATION = 60; // seconds
+// export const GAME_DURATION = 60; // seconds - REMOVED: Game now runs continuously
 export const INITIAL_SCORE = 0;
 
 // UI settings
