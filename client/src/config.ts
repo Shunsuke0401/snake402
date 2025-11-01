@@ -91,6 +91,11 @@ export const FOOD_SCORE = FOOD_TYPES[FoodType.SMALL].score;
 export const CAMERA_FOLLOW_SPEED = 0.05; // Lag factor for smooth following
 export const CAMERA_ZOOM = 1;
 
+// Networking settings for client-side prediction
+export const CLIENT_INPUT_RATE = 20; // Hz - send input to server at 20Hz
+export const SERVER_TICK_RATE = 30; // Hz - server broadcasts state at 30Hz
+export const POSITION_CORRECTION_THRESHOLD = 30; // pixels - threshold for server position corrections
+
 // Game settings
 // export const GAME_DURATION = 60; // seconds - REMOVED: Game now runs continuously
 export const INITIAL_SCORE = 0;

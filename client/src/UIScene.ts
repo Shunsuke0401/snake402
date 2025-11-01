@@ -119,12 +119,16 @@ export class UIScene extends Phaser.Scene {
 
   public updateScore(newScore: number): void {
     this.score = newScore;
-    this.scoreText.setText(`Score: ${this.score}`);
+    if (this.scoreText && this.scoreText.setText) {
+      this.scoreText.setText(`Score: ${this.score}`);
+    }
   }
 
   public updateLength(newLength: number): void {
     this.length = newLength;
-    this.lengthText.setText(`Length: ${this.length}`);
+    if (this.lengthText && this.lengthText.setText) {
+      this.lengthText.setText(`Length: ${this.length}`);
+    }
   }
 
   // Timer functionality removed - game now runs continuously
@@ -133,9 +137,11 @@ export class UIScene extends Phaser.Scene {
     this.isGameOver = true;
     
     // Update final score text
-    this.finalScoreText.setText(
-      `${reason}\n\nFinal Score: ${this.score}\nFinal Length: ${this.length}`
-    );
+    if (this.finalScoreText && this.finalScoreText.setText) {
+      this.finalScoreText.setText(
+        `${reason}\n\nFinal Score: ${this.score}\nFinal Length: ${this.length}`
+      );
+    }
     
     // Show overlay with animation
     this.gameOverOverlay.setVisible(true);

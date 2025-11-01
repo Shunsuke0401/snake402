@@ -205,9 +205,8 @@ class GameWorld {
   }
 
   private updatePlayer(player: Player, deltaTime: number): void {
-    // Smooth rotation towards target angle
-    const angleDiff = this.getAngleDifference(player.targetAngle, player.angle);
-    player.angle += angleDiff * 0.1; // Smooth rotation
+    // Apply target angle immediately for responsive control
+    player.angle = player.targetAngle;
 
     // Update speed based on boosting
     player.speed = player.isBoosting ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
@@ -232,12 +231,19 @@ class GameWorld {
   }
 
   private updatePlayerSegments(player: Player): void {
+    const beforeSegmentCount = player.segments.length;
+    
     // Add new head position
     player.segments.unshift({ x: player.x, y: player.y });
 
     // Maintain segment count based on length
     while (player.segments.length > player.length) {
       player.segments.pop();
+    }
+    
+    // Log when segments sync up with length after food eating
+    if (beforeSegmentCount < player.length && player.segments.length === player.length) {
+      console.log(`✅ Player ${player.id} segments synced: length=${player.length}, segments=${player.segments.length}`);
     }
   }
 
@@ -249,6 +255,36 @@ class GameWorld {
   }
 
   private checkCollisions(): void {
+    const playerCount = this.players.size;
+    const foodCount = this.food.size;
+    
+    // Only log every 30 ticks (once per second) to reduce spam
+    if (playerCount > 0 && foodCount > 0 && Date.now() % 1000 < 33) {
+      console.log(`Checking collisions: ${playerCount} players, ${foodCount} food items`);
+      
+      // Log first player position for debugging
+      const firstPlayer = Array.from(this.players.values())[0];
+      if (firstPlayer) {
+        console.log(`Player ${firstPlayer.id} position: (${firstPlayer.x.toFixed(1)}, ${firstPlayer.y.toFixed(1)})`);
+        
+        // Log nearest food item
+        let nearestFood = null;
+        let nearestDistance = Infinity;
+        for (const food of this.food.values()) {
+          const distance = Math.sqrt(
+            Math.pow(firstPlayer.x - food.x, 2) + Math.pow(firstPlayer.y - food.y, 2)
+          );
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestFood = food;
+          }
+        }
+        if (nearestFood) {
+          console.log(`Nearest food at (${nearestFood.x}, ${nearestFood.y}), distance: ${nearestDistance.toFixed(1)}, collision radius: ${(nearestFood.size / 2 + GRID_SIZE).toFixed(1)}`);
+        }
+      }
+    }
+    
     for (const player of this.players.values()) {
       // Check food collisions
       for (const [foodId, food] of this.food.entries()) {
@@ -256,11 +292,18 @@ class GameWorld {
           Math.pow(player.x - food.x, 2) + Math.pow(player.y - food.y, 2)
         );
 
-        const collisionRadius = food.size / 2 + GRID_SIZE / 2;
+        const collisionRadius = food.size / 2 + GRID_SIZE; // More generous collision detection
         if (distance <= collisionRadius) {
           // Player ate food
+          const oldLength = player.length;
+          const oldSegmentCount = player.segments.length;
+          console.log(`🍎 Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius})`);
+          console.log(`   Before: length=${oldLength}, segments=${oldSegmentCount}, growth=${food.growthAmount}`);
+          
           player.score += food.score;
           player.length += food.growthAmount;
+          
+          console.log(`   After: length=${player.length}, segments=${player.segments.length}`);
           
           // Remove food and broadcast
           this.food.delete(foodId);
@@ -289,6 +332,7 @@ class GameWorld {
       timestamp: Date.now()
     };
 
+    console.log(`📡 Broadcasting food ${action} message for ${food.id} to ${this.players.size} players`);
     this.broadcast(message);
   }
 
@@ -389,20 +433,23 @@ wss.on('connection', (ws, req) => {
   gameWorld.broadcast(spawnMessage, playerId);
   
   ws.on('message', (data) => {
-    try {
-      const message = JSON.parse(data.toString());
-      
-      if (message.type === 'input') {
-        const inputMessage = message as InputMessage;
-        gameWorld.updatePlayerInput(playerId, {
-          angle: inputMessage.angle,
-          throttle: inputMessage.throttle
-        });
+      try {
+        const message = JSON.parse(data.toString());
+        
+        if (message.type === 'input') {
+           const inputMessage = message as InputMessage;
+           console.log(`📥 Received input from ${playerId}: angle=${(inputMessage.angle * 180 / Math.PI).toFixed(1)}°, throttle=${inputMessage.throttle}`);
+           gameWorld.updatePlayerInput(playerId, {
+             angle: inputMessage.angle,
+             throttle: inputMessage.throttle
+           });
+         } else if (message.type === 'debug') {
+           console.log(`🐛 [${playerId}] ${message.message}`);
+         }
+      } catch (error) {
+        console.error('Error parsing message:', error);
       }
-    } catch (error) {
-      console.error('Error parsing message:', error);
-    }
-  });
+    });
   
   ws.on('close', () => {
     console.log(`Player disconnected: ${playerId}`);

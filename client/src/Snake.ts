@@ -278,6 +278,39 @@ export class Snake {
     }));
   }
 
+  public syncWithServerState(serverSegments: Array<{ x: number; y: number }>): void {
+    // Clear existing segments
+    this.segments.forEach(segment => {
+      segment.graphics.destroy();
+    });
+    this.segments = [];
+
+    // Create new segments based on server state
+    for (let i = 0; i < serverSegments.length; i++) {
+      const serverSegment = serverSegments[i];
+      const graphics = this.scene.add.graphics();
+      const segment: SnakeSegment = {
+        x: serverSegment.x,
+        y: serverSegment.y,
+        graphics
+      };
+
+      this.segments.push(segment);
+      this.drawSegment(segment, i === 0); // First segment is head
+    }
+  }
+
+  public correctPosition(newX: number, newY: number): void {
+    // Apply position correction to the head segment only
+    if (this.segments.length > 0) {
+      this.segments[0].x = newX;
+      this.segments[0].y = newY;
+      
+      // Redraw the head with the corrected position
+      this.drawSegment(this.segments[0], true);
+    }
+  }
+
   public destroy(): void {
     this.segments.forEach(segment => {
       segment.graphics.destroy();

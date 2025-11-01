@@ -99,9 +99,9 @@ export class NetClient {
   private serverUrl: string;
   private eventHandlers: Partial<NetClientEvents> = {};
   
-  // Input state
+  // Input state tracking
   private currentInput: { angle: number; throttle: number } = { angle: 0, throttle: 0 };
-  private inputSendRate: number = 20; // 20Hz input sending
+  private inputSendRate: number = 20; // 20Hz input sending for client-side prediction
   private lastInputSendTime: number = 0;
   
   // Interpolation state
@@ -169,11 +169,14 @@ export class NetClient {
   }
 
   public sendInput(angle: number, throttle: number): void {
-    if (!this.connected || !this.ws) return;
+    if (!this.connected || !this.ws) {
+      console.log(`⚠️ Cannot send input: connected=${this.connected}, ws=${!!this.ws}`);
+      return;
+    }
     
     this.currentInput = { angle, throttle };
     
-    // Send input at specified rate (20Hz)
+    // Send input at specified rate (20Hz for client-side prediction)
     const now = Date.now();
     if (now - this.lastInputSendTime >= 1000 / this.inputSendRate) {
       const message: InputMessage = {
@@ -183,9 +186,21 @@ export class NetClient {
         timestamp: now
       };
       
+      console.log(`📤 Sending input: angle=${(angle * 180 / Math.PI).toFixed(1)}°, throttle=${throttle}`);
       this.ws.send(JSON.stringify(message));
       this.lastInputSendTime = now;
     }
+  }
+
+  public sendDebugMessage(message: string): void {
+    if (!this.isConnected() || !this.ws) return;
+    
+    const debugMessage = {
+      type: 'debug',
+      message
+    };
+    
+    this.ws.send(JSON.stringify(debugMessage));
   }
 
   public update(deltaTime: number): void {
@@ -213,6 +228,10 @@ export class NetClient {
 
   public isConnected(): boolean {
     return this.connected;
+  }
+
+  public getCurrentInput(): { angle: number; throttle: number } {
+    return { ...this.currentInput };
   }
 
   public on<K extends keyof NetClientEvents>(event: K, handler: NetClientEvents[K]): void {

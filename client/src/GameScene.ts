@@ -16,7 +16,8 @@ import {
   ARENA_RADIUS,
   ARENA_WARNING_DISTANCE,
   ARENA_BOUNDARY_COLOR,
-  ARENA_WARNING_COLOR
+  ARENA_WARNING_COLOR,
+  POSITION_CORRECTION_THRESHOLD
 } from './config';
 
 // Remote player visual representation
@@ -38,10 +39,9 @@ export class GameScene extends Phaser.Scene {
   private fpsText!: Phaser.GameObjects.Text;
   private connectionText!: Phaser.GameObjects.Text;
   
-  // Mouse tracking for cursor behavior
+  // Mouse tracking for cursor behavior// Mouse tracking (for debug purposes)
   private lastMouseX: number = 0;
   private lastMouseY: number = 0;
-  private hasMouseMoved: boolean = false;
   
   // Arena boundary graphics
   private arenaBoundary!: Phaser.GameObjects.Graphics;
@@ -52,10 +52,20 @@ export class GameScene extends Phaser.Scene {
   private playerId: string | null = null;
   private remotePlayers: Map<string, RemotePlayerVisual> = new Map();
   private networkFood: Map<string, Phaser.GameObjects.Graphics> = new Map();
+  private hasReceivedInitialFood: boolean = false;
   
   // Input state for networking
   private currentAngle: number = 0;
   private currentThrottle: number = 0;
+  private inputCallCount: number = 0;
+  
+  // Client-side prediction state
+  private serverPosition: { x: number; y: number } | null = null;
+  private lastServerUpdate: number = 0;
+  private useLocalPrediction: boolean = true;
+  
+  // Local snake state tracking
+  private lastKnownServerLength: number = 0;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -63,8 +73,8 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.setupWorld();
-    this.setupInput();
     this.setupNetworking();
+    this.setupInput(); // Move after networking so netClient is available
     this.setupGame();
     this.setupCamera();
     this.setupUI();
@@ -123,21 +133,42 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
+    console.log('🔧 Setting up input...');
+    
     // Enable mouse input
     this.input.mouse!.enabled = true;
+    console.log('🔧 Mouse enabled:', this.input.mouse!.enabled);
+    
+    // Send setup confirmation to server
+    this.netClient.sendDebugMessage('🔧 Input setup started');
     
     // Track mouse movement
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      // Send a test message to server to verify events are working
+      this.netClient.sendDebugMessage(`🖱️ MOVE: (${pointer.worldX.toFixed(0)}, ${pointer.worldY.toFixed(0)})`);
+      
       const worldX = pointer.worldX;
       const worldY = pointer.worldY;
       
-      // Check if mouse actually moved
-      if (Math.abs(worldX - this.lastMouseX) > 1 || Math.abs(worldY - this.lastMouseY) > 1) {
-        this.hasMouseMoved = true;
-        this.lastMouseX = worldX;
-        this.lastMouseY = worldY;
-      }
+      // Update last mouse position for debug purposes
+      this.lastMouseX = worldX;
+      this.lastMouseY = worldY;
+      console.log(`🖱️ Mouse moved to world: (${worldX.toFixed(1)}, ${worldY.toFixed(1)})`);
     });
+    
+    // Track mouse clicks for debugging
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.netClient.sendDebugMessage(`🖱️ DOWN: (${pointer.worldX.toFixed(0)}, ${pointer.worldY.toFixed(0)})`);
+      console.log(`🖱️ Mouse down at world: (${pointer.worldX.toFixed(1)}, ${pointer.worldY.toFixed(1)})`);
+    });
+    
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      this.netClient.sendDebugMessage(`🖱️ UP: (${pointer.worldX.toFixed(0)}, ${pointer.worldY.toFixed(0)})`);
+      console.log(`🖱️ Mouse up at world: (${pointer.worldX.toFixed(1)}, ${pointer.worldY.toFixed(1)})`);
+    });
+    
+    this.netClient.sendDebugMessage('🔧 Input setup complete');
+    console.log('🔧 Input setup complete');
   }
 
   private setupNetworking(): void {
@@ -156,6 +187,10 @@ export class GameScene extends Phaser.Scene {
         Math.floor(spawnPosition.y / GRID_SIZE)
       );
       this.setupCamera();
+      
+      // Reset food loading flag and clear existing food
+      this.hasReceivedInitialFood = false;
+      this.clearNetworkFood();
     });
     
     this.netClient.on('disconnected', () => {
@@ -178,16 +213,44 @@ export class GameScene extends Phaser.Scene {
     });
     
     this.netClient.on('foodUpdate', (action: 'spawn' | 'despawn', food: NetworkFoodItem) => {
+      console.log(`🍎 Food ${action}: ${food.id} at (${food.x}, ${food.y})`);
       if (action === 'spawn') {
         this.addNetworkFood(food);
       } else {
+        console.log(`🍎 Despawning food ${food.id} - calling removeNetworkFood`);
         this.removeNetworkFood(food.id);
       }
     });
     
     this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
       this.updateRemotePlayers(players);
-      this.updateNetworkFood(food);
+      
+      // Update local player's UI and apply position correction if needed
+      if (this.playerId && this.snake) {
+        const localPlayer = players.find(p => p.id === this.playerId);
+        if (localPlayer) {
+          this.uiScene.updateScore(localPlayer.score);
+          this.uiScene.updateLength(localPlayer.length);
+          
+          // Store server position for reference
+          if (localPlayer.segments.length > 0) {
+            this.serverPosition = { x: localPlayer.x, y: localPlayer.y };
+            this.lastServerUpdate = Date.now();
+            
+            // Handle snake growth based on server length changes
+            this.handleServerLengthChange(localPlayer.length);
+            
+            // Trust local prediction completely - no position corrections
+          }
+        }
+      }
+      
+      // Load initial food from first state update, then rely on individual food updates
+      if (!this.hasReceivedInitialFood) {
+        console.log(`🍎 Loading initial food: ${food.length} items`);
+        this.updateNetworkFood(food);
+        this.hasReceivedInitialFood = true;
+      }
     });
     
     this.netClient.on('error', (error: string) => {
@@ -203,7 +266,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupGame(): void {
-    // Initialize food manager (for local food rendering, but networked food will override)
+    // Initialize food manager (disabled for networked gameplay)
     this.foodManager = new FoodManager(this);
     
     // Reset game state
@@ -252,34 +315,43 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleInput(): void {
-    if (!this.isGameActive || !this.isConnected || !this.snake) return;
+    this.inputCallCount++;
+    
+    if (!this.isGameActive || !this.isConnected || !this.snake) {
+      if (this.inputCallCount % 60 === 0) { // Log every 60 calls (about once per second)
+        console.log(`⚠️ Input blocked: gameActive=${this.isGameActive}, connected=${this.isConnected}, snake=${!!this.snake}`);
+      }
+      return;
+    }
     
     const pointer = this.input.activePointer;
     
-    // Only update snake direction if mouse has moved
-    if (this.hasMouseMoved) {
-      // Get cursor position in world coordinates
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
-      
-      // Get snake head position
-      const headPos = this.snake.getHeadPosition();
-      
-      // Calculate angle from snake head to cursor
-      const dx = worldX - headPos.x;
-      const dy = worldY - headPos.y;
-      const targetAngle = Math.atan2(dy, dx);
-      
-      // Set snake target angle (for local prediction)
-      this.snake.setTargetAngle(targetAngle);
-      this.currentAngle = targetAngle;
-      
-      // Reset mouse moved flag
-      this.hasMouseMoved = false;
+    // Always update angle based on current mouse position
+    const worldX = pointer.worldX;
+    const worldY = pointer.worldY;
+    
+    // Get snake head position
+    const headPos = this.snake.getHeadPosition();
+    
+    // Calculate angle from snake head to cursor
+    const dx = worldX - headPos.x;
+    const dy = worldY - headPos.y;
+    const targetAngle = Math.atan2(dy, dx);
+    
+    // Only log occasionally to avoid spam
+    if (this.inputCallCount % 30 === 0) {
+      console.log(`🎯 Angle: ${(targetAngle * 180 / Math.PI).toFixed(1)}° (cursor: ${worldX.toFixed(1)}, ${worldY.toFixed(1)}, head: ${headPos.x.toFixed(1)}, ${headPos.y.toFixed(1)})`);
     }
+    
+    // Set snake target angle (for local prediction)
+    this.snake.setTargetAngle(targetAngle);
+    this.currentAngle = targetAngle;
     
     // Handle boosting
     const isBoosting = pointer.isDown;
+    if (this.inputCallCount % 30 === 0) {
+      console.log(`🚀 Boost: ${isBoosting ? 'ON' : 'OFF'}`);
+    }
     this.snake.setBoosting(isBoosting);
     this.currentThrottle = isBoosting ? 1 : 0;
     
@@ -311,6 +383,45 @@ export class GameScene extends Phaser.Scene {
     
     // Note: Collision detection is now handled server-side
     // This method is kept for potential local prediction or effects
+    
+    // Also check network food collisions for immediate feedback
+    this.checkNetworkFoodCollisions();
+  }
+  
+  private checkNetworkFoodCollisions(): void {
+    if (!this.snake || !this.useLocalPrediction) {
+      return;
+    }
+    
+    const headPos = this.snake.getHeadGridPosition();
+    const headRadius = GRID_SIZE / 2;
+    
+    // Check collision with network food
+    for (const [foodId, foodGraphics] of this.networkFood) {
+      // Get food position from graphics
+      const foodX = foodGraphics.x;
+      const foodY = foodGraphics.y;
+      const foodGridX = Math.floor(foodX / GRID_SIZE);
+      const foodGridY = Math.floor(foodY / GRID_SIZE);
+      
+      // Check if head is close enough to food
+      const distance = Math.sqrt(
+        Math.pow(headPos.gridX - foodGridX, 2) + 
+        Math.pow(headPos.gridY - foodGridY, 2)
+      );
+      
+      if (distance < 1.5) { // Within 1.5 grid units
+        console.log(`🍎 Local food collision detected: ${foodId} at (${foodGridX}, ${foodGridY})`);
+        
+        // Immediately grow the snake for responsive feedback
+        this.snake.grow();
+        
+        // Remove the food visually (server will confirm)
+        this.removeNetworkFood(foodId);
+        
+        break; // Only eat one food per frame
+      }
+    }
   }
 
   // Timer removed - game now runs continuously without time limit
@@ -344,7 +455,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateConnectionStatus(status: string): void {
-    if (this.connectionText) {
+    if (this.connectionText && this.connectionText.setText) {
       this.connectionText.setText(status);
       
       // Color coding
@@ -357,6 +468,44 @@ export class GameScene extends Phaser.Scene {
       }
     }
   }
+
+  private handleServerLengthChange(serverLength: number): void {
+    if (!this.snake || !this.useLocalPrediction) {
+      return;
+    }
+    
+    // Initialize if this is the first update
+    if (this.lastKnownServerLength === 0) {
+      this.lastKnownServerLength = serverLength;
+      return;
+    }
+    
+    // Check if snake should grow
+    const lengthDifference = serverLength - this.lastKnownServerLength;
+    if (lengthDifference > 0) {
+      console.log(`🐍 Growing snake locally: ${this.lastKnownServerLength} -> ${serverLength} (+${lengthDifference})`);
+      
+      // Grow the snake locally for each segment increase
+      for (let i = 0; i < lengthDifference; i++) {
+        this.snake.grow();
+      }
+      
+      this.lastKnownServerLength = serverLength;
+    } else if (lengthDifference < 0) {
+      console.log(`🐍 Shrinking snake locally: ${this.lastKnownServerLength} -> ${serverLength} (${lengthDifference})`);
+      
+      // Shrink the snake locally for each segment decrease
+      for (let i = 0; i < Math.abs(lengthDifference); i++) {
+        this.snake.shrink();
+      }
+      
+      this.lastKnownServerLength = serverLength;
+    }
+  }
+
+
+  
+
 
   private updateRemotePlayers(players: NetworkPlayerState[]): void {
     // Update existing remote players and add new ones
@@ -425,12 +574,21 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateNetworkFood(food: NetworkFoodItem[]): void {
-    // Clear existing network food
-    this.clearNetworkFood();
+    // Create a set of current food IDs from server
+    const serverFoodIds = new Set(food.map(f => f.id));
     
-    // Add all network food
+    // Remove food that's no longer on the server
+    for (const [foodId] of this.networkFood) {
+      if (!serverFoodIds.has(foodId)) {
+        this.removeNetworkFood(foodId);
+      }
+    }
+    
+    // Add new food from server
     for (const foodItem of food) {
-      this.addNetworkFood(foodItem);
+      if (!this.networkFood.has(foodItem.id)) {
+        this.addNetworkFood(foodItem);
+      }
     }
   }
 
@@ -442,10 +600,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   private removeNetworkFood(foodId: string): void {
+    console.log(`🍎 Attempting to remove food ${foodId} from client. Current food count: ${this.networkFood.size}`);
+    console.log(`🍎 Available food IDs:`, Array.from(this.networkFood.keys()).slice(0, 5));
+    
     const graphics = this.networkFood.get(foodId);
     if (graphics) {
+      console.log(`🍎 Successfully removing food ${foodId} from client`);
       graphics.destroy();
       this.networkFood.delete(foodId);
+      console.log(`🍎 Food removed. New count: ${this.networkFood.size}`);
+    } else {
+      console.log(`⚠️ Tried to remove food ${foodId} but it wasn't found in client`);
+      console.log(`⚠️ Food ID not found in:`, Array.from(this.networkFood.keys()).slice(0, 10));
     }
   }
 
@@ -487,7 +653,9 @@ export class GameScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     // Update FPS display
-    this.fpsText.setText(`FPS: ${Math.round(this.game.loop.actualFps)}`);
+    if (this.fpsText && this.fpsText.setText) {
+      this.fpsText.setText(`FPS: ${Math.round(this.game.loop.actualFps)}`);
+    }
     
     if (!this.isGameActive) return;
     
@@ -499,13 +667,15 @@ export class GameScene extends Phaser.Scene {
     // Handle input
     this.handleInput();
     
-    // Update local snake (for prediction)
-    if (this.snake) {
+
+    
+    // Update local snake with client-side prediction
+    if (this.snake && this.useLocalPrediction) {
       this.snake.update(delta);
     }
     
-    // Update food manager (though network food takes precedence)
-    this.foodManager.update(time);
+    // Local food manager disabled for networked gameplay
+    // this.foodManager.update(time);
     
     // Update camera
     this.updateCamera();
@@ -516,9 +686,9 @@ export class GameScene extends Phaser.Scene {
     // Check arena proximity
     this.checkArenaProximity();
     
-    // Update food manager with snake positions
-    if (this.snake) {
-      this.foodManager.updateSnakePositions(this.snake.getAllSegments());
-    }
+    // Local food manager disabled for networked gameplay
+    // if (this.snake) {
+    //   this.foodManager.updateSnakePositions(this.snake.getAllSegments());
+    // }
   }
 }
