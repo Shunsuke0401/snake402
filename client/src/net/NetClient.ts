@@ -43,6 +43,17 @@ interface DieMessage extends BaseMessage {
   reason: string;
 }
 
+interface EatAttemptMessage extends BaseMessage {
+  type: 'eat_attempt';
+  foodId: string;
+}
+
+interface FoodEatenMessage extends BaseMessage {
+  type: 'food_eaten';
+  foodId: string;
+  by: string; // playerId who ate the food
+}
+
 // Network state interfaces
 export interface NetworkPlayerState {
   id: string;
@@ -88,6 +99,7 @@ export interface NetClientEvents {
   playerSpawned: (playerId: string, position: { x: number; y: number }) => void;
   playerDied: (playerId: string, reason: string) => void;
   foodUpdate: (action: 'spawn' | 'despawn', food: NetworkFoodItem) => void;
+  foodEaten: (foodId: string, by: string) => void;
   stateUpdate: (players: NetworkPlayerState[], food: NetworkFoodItem[]) => void;
   error: (error: string) => void;
 }
@@ -203,6 +215,22 @@ export class NetClient {
     this.ws.send(JSON.stringify(debugMessage));
   }
 
+  public sendEatAttempt(foodId: string): void {
+    if (!this.isConnected() || !this.ws) {
+      console.log(`❌ CLIENT: Cannot send eat attempt - not connected`);
+      return;
+    }
+    
+    const eatMessage: EatAttemptMessage = {
+      type: 'eat_attempt',
+      foodId,
+      timestamp: Date.now()
+    };
+    
+    console.log(`📤 CLIENT: Sending eat attempt for food ${foodId}`);
+    this.ws.send(JSON.stringify(eatMessage));
+  }
+
   public update(deltaTime: number): void {
     // Update interpolation for remote players
     this.updateInterpolation(deltaTime);
@@ -262,6 +290,9 @@ export class NetClient {
           break;
         case 'food':
           this.handleFood(message as FoodMessage);
+          break;
+        case 'food_eaten':
+          this.handleFoodEaten(message as FoodEatenMessage);
           break;
         case 'spawn':
           this.handleSpawn(message as SpawnMessage);
@@ -335,6 +366,11 @@ export class NetClient {
 
   private handleFood(message: FoodMessage): void {
     this.emit('foodUpdate', message.action, message.food);
+  }
+
+  private handleFoodEaten(message: FoodEatenMessage): void {
+    console.log(`🍎 Food eaten: ${message.foodId} by ${message.by}`);
+    this.emit('foodEaten', message.foodId, message.by);
   }
 
   private handleSpawn(message: SpawnMessage): void {

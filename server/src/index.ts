@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
 import { URL } from 'url';
+import { FoodManager } from './game/FoodManager';
 
 const PORT = 8081;
 const TICK_RATE = 30; // 30Hz server tick rate
@@ -60,6 +61,17 @@ interface DieMessage extends BaseMessage {
   reason: string;
 }
 
+interface EatAttemptMessage extends BaseMessage {
+  type: 'eat_attempt';
+  foodId: string;
+}
+
+interface FoodEatenMessage extends BaseMessage {
+  type: 'food_eaten';
+  foodId: string;
+  by: string;
+}
+
 // Game state interfaces
 interface PlayerState {
   id: string;
@@ -102,45 +114,19 @@ interface Player {
 // World state
 class GameWorld {
   private players: Map<string, Player> = new Map();
-  private food: Map<string, FoodItem> = new Map();
-  private lastTickTime: number = Date.now();
+  private foodManager: FoodManager;
+
 
   constructor() {
-    this.initializeFood();
+    this.foodManager = new FoodManager(
+      MAX_FOOD,
+      { x: ARENA_CENTER_X, y: ARENA_CENTER_Y },
+      ARENA_RADIUS,
+      GRID_SIZE
+    );
   }
 
-  private initializeFood(): void {
-    for (let i = 0; i < MAX_FOOD; i++) {
-      this.spawnFood();
-    }
-  }
 
-  private spawnFood(): void {
-    const id = `food_${Date.now()}_${Math.random()}`;
-    
-    // Random position within arena using uniform distribution
-    const angle = Math.random() * 2 * Math.PI;
-    const radius = Math.sqrt(Math.random()) * (ARENA_RADIUS - 50);
-    const x = ARENA_CENTER_X + Math.cos(angle) * radius;
-    const y = ARENA_CENTER_Y + Math.sin(angle) * radius;
-
-    // 90% small food, 10% large food
-    const isLarge = Math.random() < 0.1;
-    const foodType = isLarge ? 'large' : 'small';
-
-    const food: FoodItem = {
-      id,
-      x: Math.round(x / GRID_SIZE) * GRID_SIZE,
-      y: Math.round(y / GRID_SIZE) * GRID_SIZE,
-      type: foodType,
-      color: isLarge ? 0x9C27B0 : 0xFF5722,
-      size: isLarge ? 40 : 20,
-      score: isLarge ? 25 : 10,
-      growthAmount: isLarge ? 2 : 1
-    };
-
-    this.food.set(id, food);
-  }
 
   public addPlayer(playerId: string, ws: WebSocket): Player {
     // Random spawn position within arena
@@ -252,24 +238,20 @@ class GameWorld {
     }
   }
 
-  private getAngleDifference(target: number, current: number): number {
-    let diff = target - current;
-    while (diff > Math.PI) diff -= 2 * Math.PI;
-    while (diff < -Math.PI) diff += 2 * Math.PI;
-    return diff;
-  }
+
 
   private checkCollisions(): void {
     // Debug: Log collision check for first player every 2 seconds
     if (this.players.size > 0 && Date.now() % 2000 < TICK_INTERVAL * 2) {
       const firstPlayer = Array.from(this.players.values())[0];
       console.log(`🔍 COLLISION CHECK: Player ${firstPlayer.id} at (${firstPlayer.x.toFixed(1)}, ${firstPlayer.y.toFixed(1)}), length=${firstPlayer.length}, segments=${firstPlayer.segments.length}`);
-      console.log(`🔍 FOOD COUNT: ${this.food.size} food items available`);
+      console.log(`🔍 FOOD COUNT: ${this.foodManager.getFoodCount()} food items available`);
       
-      if (this.food.size > 0) {
+      const allFood = this.foodManager.getAllFood();
+      if (allFood.length > 0) {
         let nearestFood = null;
         let nearestDistance = Infinity;
-        for (const food of this.food.values()) {
+        for (const food of allFood) {
           const distance = Math.sqrt(
             Math.pow(firstPlayer.x - food.x, 2) + Math.pow(firstPlayer.y - food.y, 2)
           );
@@ -284,46 +266,17 @@ class GameWorld {
       }
     }
     
-    for (const player of this.players.values()) {
-      // Check food collisions
-      for (const [foodId, food] of this.food.entries()) {
-        const distance = Math.sqrt(
-          Math.pow(player.x - food.x, 2) + Math.pow(player.y - food.y, 2)
-        );
-
-        const collisionRadius = food.size / 2 + GRID_SIZE * 2; // More generous collision detection
-        if (distance <= collisionRadius) {
-          // Player ate food
-          const oldLength = player.length;
-          const oldSegmentCount = player.segments.length;
-          console.log(`🍎 FOOD COLLISION: Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius})`);
-          console.log(`🍎 BEFORE: length=${oldLength}, segments=${oldSegmentCount}, growth=${food.growthAmount}`);
-          
-          player.score += food.score;
-          player.length += food.growthAmount;
-          
-          // IMMEDIATELY update segments to match new length in the same tick
-          this.updatePlayerSegments(player);
-          
-          console.log(`🍎 AFTER: length=${player.length}, segments=${player.segments.length}`);
-          console.log(`🍎 FOOD REMOVED: ${foodId} at (${food.x}, ${food.y})`);
-          
-          // Remove food and broadcast
-          this.food.delete(foodId);
-          this.broadcastFoodUpdate('despawn', food);
-          
-          // Spawn new food
-          this.spawnFood();
-          break;
-        }
-      }
-    }
+    // Note: Food collision detection is now handled by eat_attempt messages
+    // This method is kept for potential future collision types (walls, other players, etc.)
   }
 
   private maintainFood(): void {
     // Ensure we always have MAX_FOOD items
-    while (this.food.size < MAX_FOOD) {
-      this.spawnFood();
+    const newFood = this.foodManager.maintainFoodCount();
+    
+    // Broadcast any new food that was spawned
+    for (const food of newFood) {
+      this.broadcastFoodUpdate('spawn', food);
     }
   }
 
@@ -354,7 +307,7 @@ class GameWorld {
     return {
       type: 'state',
       players,
-      food: Array.from(this.food.values()),
+      food: this.foodManager.getAllFood(),
       timestamp: Date.now()
     };
   }
@@ -370,6 +323,57 @@ class GameWorld {
 
   public getPlayerCount(): number {
     return this.players.size;
+  }
+
+  public handleEatAttempt(playerId: string, foodId: string): void {
+    const player = this.players.get(playerId);
+    if (!player) {
+      console.log(`❌ Eat attempt failed: Player ${playerId} not found`);
+      return;
+    }
+
+    // Convert player to FoodManager format
+    const playerForValidation = {
+      id: player.id,
+      x: player.x,
+      y: player.y,
+      segments: player.segments,
+      length: player.length,
+      score: player.score
+    };
+
+    // Validate the eat attempt
+    const result = this.foodManager.validateEatAttempt(playerForValidation, foodId);
+    
+    if (result.success && result.food) {
+      // Update player stats
+      player.score += result.food.score;
+      player.length += result.food.growthAmount;
+      
+      // IMMEDIATELY update segments to match new length in the same tick
+      this.updatePlayerSegments(player);
+      
+      console.log(`✅ Food eaten validated: Player ${playerId} ate food ${foodId}, new length: ${player.length}`);
+      
+      // Broadcast food_eaten message to all clients
+      const foodEatenMessage: FoodEatenMessage = {
+        type: 'food_eaten',
+        foodId,
+        by: playerId,
+        timestamp: Date.now()
+      };
+      this.broadcast(foodEatenMessage);
+      
+      // Broadcast food despawn
+      this.broadcastFoodUpdate('despawn', result.food);
+      
+      // Broadcast new food spawn if one was created
+      if (result.newFood) {
+        this.broadcastFoodUpdate('spawn', result.newFood);
+      }
+    } else {
+      console.log(`❌ Food eaten validation failed: Player ${playerId} cannot eat food ${foodId}`);
+    }
   }
 }
 
@@ -439,6 +443,11 @@ wss.on('connection', (ws, req) => {
       try {
         const message = JSON.parse(data.toString());
         
+        // Debug: Log all message types
+        if (message.type !== 'input') {
+          console.log(`📨 Received message from ${playerId}: type=${message.type}`);
+        }
+        
         if (message.type === 'input') {
            const inputMessage = message as InputMessage;
            console.log(`📥 Received input from ${playerId}: angle=${(inputMessage.angle * 180 / Math.PI).toFixed(1)}°, throttle=${inputMessage.throttle}`);
@@ -446,8 +455,14 @@ wss.on('connection', (ws, req) => {
              angle: inputMessage.angle,
              throttle: inputMessage.throttle
            });
+         } else if (message.type === 'eat_attempt') {
+           const eatMessage = message as EatAttemptMessage;
+           console.log(`🍎 Received eat_attempt from ${playerId}: foodId=${eatMessage.foodId}`);
+           gameWorld.handleEatAttempt(playerId, eatMessage.foodId);
          } else if (message.type === 'debug') {
            console.log(`🐛 [${playerId}] ${message.message}`);
+         } else {
+           console.log(`❓ Unknown message type from ${playerId}: ${message.type}`);
          }
       } catch (error) {
         console.error('Error parsing message:', error);

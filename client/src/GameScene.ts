@@ -17,7 +17,11 @@ import {
   ARENA_WARNING_DISTANCE,
   ARENA_BOUNDARY_COLOR,
   ARENA_WARNING_COLOR,
-  POSITION_CORRECTION_THRESHOLD
+  POSITION_CORRECTION_THRESHOLD,
+  FOOD_RADIUS,
+  SNAKE_EAT_RADIUS,
+  COLLISION_CHECK_INTERVAL,
+  COLLISION_SPATIAL_CULLING_DISTANCE
 } from './config';
 
 // Remote player visual representation
@@ -66,6 +70,10 @@ export class GameScene extends Phaser.Scene {
   
   // Local snake state tracking
   private lastKnownServerLength: number = 0;
+  
+  // Client-side collision prediction
+  private lastCollisionCheckTime: number = 0;
+  private predictedEatenFood: Set<string> = new Set(); // Track food we've predicted as eaten
 
   constructor() {
     super({ key: 'GameScene' });
@@ -220,6 +228,19 @@ export class GameScene extends Phaser.Scene {
         console.log(`🍎 Despawning food ${food.id} - calling removeNetworkFood`);
         this.removeNetworkFood(food.id);
       }
+    });
+
+    this.netClient.on('foodEaten', (foodId: string, by: string) => {
+      console.log(`🍎 Server confirmed food eaten: ${foodId} by ${by}`);
+      
+      // Remove from predicted eaten set if we predicted it
+      this.predictedEatenFood.delete(foodId);
+      
+      // Ensure the food is visually removed (server validation)
+      this.removeNetworkFood(foodId);
+      
+      // If this was eaten by another player and we had predicted it incorrectly,
+      // we might need to re-show it, but the server's foodUpdate will handle respawn
     });
     
     this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
@@ -391,10 +412,93 @@ export class GameScene extends Phaser.Scene {
   }
   
   private checkNetworkFoodCollisions(): void {
-    // Client-side collision detection removed to prevent inconsistencies
-    // Server is now fully authoritative for food collisions
-    // This prevents race conditions and ensures consistent behavior
-    return;
+    // Client-side collision prediction for immediate feedback
+    const currentTime = Date.now();
+    
+    // Throttle collision checks to COLLISION_CHECK_INTERVAL
+    if (currentTime - this.lastCollisionCheckTime < COLLISION_CHECK_INTERVAL) {
+      return;
+    }
+    this.lastCollisionCheckTime = currentTime;
+
+    if (!this.snake || this.snake.getLength() === 0) {
+      console.log(`🔍 CLIENT: No snake or empty snake (length: ${this.snake ? this.snake.getLength() : 'null'})`);
+      return;
+    }
+
+    const head = this.snake.getHeadPosition();
+    if (!head) {
+      console.log(`🔍 CLIENT: No head position`);
+      return;
+    }
+
+    // Debug: Log collision check
+    console.log(`🔍 CLIENT: Checking collisions for snake head at (${head.x.toFixed(1)}, ${head.y.toFixed(1)})`);
+    console.log(`🔍 CLIENT: Available food items: ${this.networkFood.size}`);
+    
+    // Add a visual indicator that collision detection is running
+    const uiScene = this.scene.get('UIScene') as any;
+    if (uiScene) {
+      uiScene.add.text(10, 100, `Collision Check: ${Date.now()}`, { fontSize: '16px', color: '#ffffff' }).setDepth(1000);
+    }
+
+    // Check collisions with all visible food items
+    let nearestFood: { id: string; distance: number; food: NetworkFoodItem } | null = null;
+    let nearestDistance = Infinity;
+
+    this.networkFood.forEach((foodItem, foodId) => {
+      // Skip if we've already predicted this food as eaten
+      if (this.predictedEatenFood.has(foodId)) {
+        console.log(`🔍 CLIENT: Skipping food ${foodId} - already predicted as eaten`);
+        return;
+      }
+
+      const food = foodItem.data;
+      
+      // Spatial culling - only check food within reasonable distance
+      const distanceToFood = Phaser.Math.Distance.Between(
+        head.x, head.y, food.x, food.y
+      );
+
+      console.log(`🔍 CLIENT: Food ${foodId} at (${food.x}, ${food.y}) - distance: ${distanceToFood.toFixed(1)}`);
+
+      if (distanceToFood < nearestDistance) {
+        nearestDistance = distanceToFood;
+        nearestFood = { id: foodId, distance: distanceToFood, food };
+      }
+
+      // Skip distant food for performance
+      if (distanceToFood > COLLISION_SPATIAL_CULLING_DISTANCE) {
+        console.log(`🔍 CLIENT: Food ${foodId} too far (${distanceToFood.toFixed(1)} > ${COLLISION_SPATIAL_CULLING_DISTANCE})`);
+        return;
+      }
+
+      // Check if collision occurred
+      const collisionRadius = FOOD_RADIUS + SNAKE_EAT_RADIUS;
+      console.log(`🔍 CLIENT: Checking collision - distance: ${distanceToFood.toFixed(1)}, threshold: ${collisionRadius}`);
+      
+      if (distanceToFood <= collisionRadius) {
+        console.log(`🍎 CLIENT: COLLISION DETECTED! Food ${foodId} at distance ${distanceToFood.toFixed(1)}`);
+        
+        // Mark as predicted eaten to avoid duplicate attempts
+        this.predictedEatenFood.add(foodId);
+        
+        // Send eat attempt to server
+        console.log(`📨 CLIENT: Sending eat attempt for food ${foodId}`);
+        this.netClient.sendEatAttempt(foodId);
+        
+        // Immediately hide the food for responsive feedback
+        this.removeNetworkFood(foodId);
+        
+        return; // Only eat one food per check
+      }
+    });
+
+    if (nearestFood) {
+      console.log(`🔍 CLIENT: Nearest food: ${nearestFood.id} at distance ${nearestFood.distance.toFixed(1)}`);
+    } else {
+      console.log(`🔍 CLIENT: No food found`);
+    }
   }
 
   // Timer removed - game now runs continuously without time limit
