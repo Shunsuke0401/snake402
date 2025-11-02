@@ -17,8 +17,8 @@ const BASE_SPEED = 200; // pixels per second
 const BOOST_MULTIPLIER = 1.5;
 const SNAKE_INITIAL_LENGTH = 3;
 const MAX_FOOD = 500; // Optimized count for performance and good food density
-const SNAKE_COLLISION_RADIUS = 20; // Radius for snake-to-snake collision detection (head vs body)
-const SNAKE_COLLISION_RADIUS_SQ = SNAKE_COLLISION_RADIUS * SNAKE_COLLISION_RADIUS; // 400
+const SNAKE_COLLISION_RADIUS = 10; // Reduced for precise collision (was 20) - half a block
+const SNAKE_COLLISION_RADIUS_SQ = SNAKE_COLLISION_RADIUS * SNAKE_COLLISION_RADIUS; // 100
 
 // Message types
 interface BaseMessage { type: string; timestamp?: number }
@@ -638,10 +638,10 @@ class GameWorld {
     // Optimized for many players - no logging, minimal allocations
     
     // Pre-define constants outside loop for performance
-    const FOOD_RADIUS = 20;
-    const SNAKE_EAT_RADIUS = 50;
-    const collisionDistance = FOOD_RADIUS + SNAKE_EAT_RADIUS; // 70px
-    const collisionDistanceSquared = collisionDistance * collisionDistance; // 4900
+    const FOOD_RADIUS = 8;  // Reduced for precise collision (was 20)
+    const SNAKE_EAT_RADIUS = 12;  // Reduced for precise collision (was 50)
+    const collisionDistance = FOOD_RADIUS + SNAKE_EAT_RADIUS; // 20px (one block)
+    const collisionDistanceSquared = collisionDistance * collisionDistance; // 400
     const searchRadius = 300;
     
     for (const player of this.players.values()) {
@@ -944,19 +944,21 @@ class GameWorld {
     others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number; segments: Array<{ x: number; y: number }> }>;
   } | null {
     const player = this.players.get(playerId);
-    if (!player || !player.segments || player.segments.length === 0) {
+    if (!player || !player.alive) {
       return null;
     }
 
-    const head = player.segments[0];
+    // Use actual player head position (player.x, player.y) for distance calculations
+    const headX = player.x;
+    const headY = player.y;
     const viewRadiusSquared = viewRadius * viewRadius;
 
     // Get nearby food using spatial partitioning
-    const nearbyFood = this.foodManager.getFoodNearPosition(head.x, head.y, viewRadius);
+    const nearbyFood = this.foodManager.getFoodNearPosition(headX, headY, viewRadius);
     const visibleFoods = nearbyFood
       .filter(food => {
-        const dx = head.x - food.x;
-        const dy = head.y - food.y;
+        const dx = headX - food.x;
+        const dy = headY - food.y;
         return (dx * dx + dy * dy) <= viewRadiusSquared;
       })
       .map(food => ({
@@ -969,17 +971,17 @@ class GameWorld {
       }));
 
     // Get nearby players (only alive players)
-    // Static snakes are always visible regardless of distance
+    // Use head position for distance calculations, always include static snakes
     const visiblePlayers = Array.from(this.players.values())
       .filter(p => p.alive && p.id !== playerId && p.segments && p.segments.length > 0)
       .filter(p => {
-        // Always include static snakes
+        // Always include static snakes regardless of distance
         if (p.id.startsWith('static_snake_')) {
           return true;
         }
-        // For regular players, use distance check
-        const dx = head.x - p.x;
-        const dy = head.y - p.y;
+        // For regular players, use distance check based on their head position
+        const dx = headX - p.x;
+        const dy = headY - p.y;
         return (dx * dx + dy * dy) <= viewRadiusSquared;
       })
       .map(p => ({

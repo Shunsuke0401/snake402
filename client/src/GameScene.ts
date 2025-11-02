@@ -370,7 +370,7 @@ export class GameScene extends Phaser.Scene {
       tick: number;
       player: NetworkPlayerState;
       foods: Array<{ id: string; x: number; y: number; color: number; size: number; type: string }>;
-      others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number }>;
+      others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number; segments: Array<{ x: number; y: number }> }>;
     }) => {
       // Update local player
       if (this.playerId && this.snake && data.player.id === this.playerId) {
@@ -385,14 +385,14 @@ export class GameScene extends Phaser.Scene {
         }
       }
       
-      // Update visible remote players
+      // Update visible remote players - PRESERVE SEGMENTS!
       const remotePlayers: NetworkPlayerState[] = data.others.map(p => ({
         id: p.id,
         x: p.x,
         y: p.y,
         angle: p.angle,
         length: p.length,
-        segments: [], // Simplified - no segments for remote players
+        segments: p.segments || [], // Keep segments from server data
         isBoosting: false,
         score: p.score
       }));
@@ -1100,13 +1100,9 @@ export class GameScene extends Phaser.Scene {
       this.updateRemotePlayerVisual(remotePlayer, playerState);
     }
     
-    // Remove players that are no longer in the state
-    const currentPlayerIds = new Set(players.map(p => p.id));
-    for (const [playerId] of this.remotePlayers) {
-      if (!currentPlayerIds.has(playerId)) {
-        this.removeRemotePlayer(playerId);
-      }
-    }
+    // Note: We don't remove players that are missing from the current state batch
+    // because they might just be outside the view radius. Players are only removed
+    // when we receive an explicit 'playerDied' event from the server.
   }
 
   private createRemotePlayerVisual(playerId: string): RemotePlayerVisual {

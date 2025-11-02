@@ -88,8 +88,8 @@ export const FOOD_SIZE = FOOD_TYPES[FoodType.SMALL].size;
 export const FOOD_SCORE = FOOD_TYPES[FoodType.SMALL].score;
 
 // Collision detection settings
-export const FOOD_RADIUS = 15; // Food collision radius in pixels
-export const SNAKE_EAT_RADIUS = 25; // Snake head eating radius in pixels
+export const FOOD_RADIUS = 8; // Reduced for precise collision (was 15)
+export const SNAKE_EAT_RADIUS = 12; // Reduced for precise collision (was 25)
 export const COLLISION_CHECK_INTERVAL = 100; // ms - how often to check for collisions (reduced for debugging)
 export const COLLISION_SPATIAL_CULLING_DISTANCE = 300; // Only check collisions within this distance
 

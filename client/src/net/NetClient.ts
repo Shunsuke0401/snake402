@@ -98,7 +98,7 @@ export interface NetClientEvents {
     tick: number;
     player: NetworkPlayerState;
     foods: Array<{ id: string; x: number; y: number; color: number; size: number; type: string }>;
-    others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number }>;
+    others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number; segments: Array<{ x: number; y: number }> }>;
   }) => void;
   foodState: (foods: NetworkFoodItem[]) => void;
   foodUpdateCombined: (despawnId: string, spawnFood: NetworkFoodItem) => void;

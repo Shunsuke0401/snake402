@@ -38,8 +38,8 @@ export class FoodManager {
   private readonly SPATIAL_CELL_SIZE = 500; // 500px cells for spatial partitioning
   
   // Collision constants
-  private readonly FOOD_RADIUS = 15;
-  private readonly SNAKE_EAT_RADIUS = 25;
+  private readonly FOOD_RADIUS = 8;  // Reduced for precise collision (was 15)
+  private readonly SNAKE_EAT_RADIUS = 12;  // Reduced for precise collision (was 25)
 
   constructor(
     maxFood: number,
