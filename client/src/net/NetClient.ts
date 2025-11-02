@@ -89,7 +89,8 @@ export interface NetClientEvents {
   connected: (playerId: string, spawnPosition: { x: number; y: number }) => void;
   disconnected: () => void;
   playerSpawned: (playerId: string, position: { x: number; y: number }) => void;
-  playerDied: (playerId: string, reason: string) => void;
+  playerDied: (playerId: string, reason: string, food: NetworkFoodItem[]) => void;
+  playerRespawned: (playerId: string, position: { x: number; y: number }) => void;
   foodUpdate: (action: 'spawn' | 'despawn', food: NetworkFoodItem) => void;
   foodEaten: (foodId: string, by: string) => void;
   stateUpdate: (players: NetworkPlayerState[], food: NetworkFoodItem[]) => void;
@@ -108,8 +109,33 @@ export class NetClient {
   private socket: Socket | null = null;
   private connected: boolean = false;
   private playerId: string | null = null;
+  private playerNickname: string = 'Player';
   private serverUrl: string;
   private eventHandlers: Partial<NetClientEvents> = {};
+
+  // Expose socket for test mode operations
+  public getSocket(): Socket | null {
+    return this.socket;
+  }
+
+  // Convenience getter for socket (alias for getSocket)
+  get socketAccessor(): Socket | null {
+    return this.socket;
+  }
+
+  // Set player nickname
+  public setNickname(nickname: string): void {
+    this.playerNickname = nickname;
+    // If already connected, send nickname to server
+    if (this.socket && this.connected) {
+      this.socket.emit('set_nickname', { nickname });
+    }
+  }
+
+  // Get player nickname
+  public getNickname(): string {
+    return this.playerNickname;
+  }
   
   // Input state tracking
   private currentInput: { angle: number; throttle: number } = { angle: 0, throttle: 0 };
@@ -145,6 +171,12 @@ export class NetClient {
         console.log('✅ Connected to game server', this.socket!.id);
         this.connected = true;
         this.reconnectAttempts = 0; // Reset on successful connection
+        
+        // Send nickname to server if set
+        if (this.playerNickname && this.socket) {
+          this.socket.emit('set_nickname', { nickname: this.playerNickname });
+        }
+        
         resolve();
       });
 
@@ -237,6 +269,37 @@ export class NetClient {
       this.socket.on('die', (msg: DieMessage) => {
         this.handleDie(msg);
       });
+      
+      // Player death with food drops
+      this.socket.on('player_died', (data: {
+        playerId: string;
+        reason: string;
+        food: Array<{ id: string; x: number; y: number; color: number; size: number; type: string; score: number; growthAmount: number }>;
+        timestamp: number;
+      }) => {
+        console.log(`💀 Player ${data.playerId} died: ${data.reason}`);
+        const foodItems: NetworkFoodItem[] = data.food.map(f => ({
+          id: f.id,
+          x: f.x,
+          y: f.y,
+          color: f.color,
+          size: f.size,
+          type: f.type as 'small' | 'large',
+          score: f.score,
+          growthAmount: f.growthAmount
+        }));
+        this.emit('playerDied', data.playerId, data.reason, foodItems);
+      });
+      
+      // Player respawn
+      this.socket.on('player_respawned', (data: {
+        playerId: string;
+        position: { x: number; y: number };
+        timestamp: number;
+      }) => {
+        console.log(`🔄 Player ${data.playerId} respawned`);
+        this.emit('playerRespawned', data.playerId, data.position);
+      });
     });
   }
 
@@ -280,6 +343,15 @@ export class NetClient {
     
     console.log(`📤 CLIENT: Sending eat attempt for food ${foodId}`);
     this.socket.emit('eat_attempt', { foodId });
+  }
+
+  public sendAdminCommand(command: any): void {
+    if (!this.socket || !this.connected) {
+      console.warn('⚠️ Cannot send admin command - not connected');
+      return;
+    }
+    
+    this.socket.emit(command.type, command);
   }
 
   public update(_deltaTime: number): void {

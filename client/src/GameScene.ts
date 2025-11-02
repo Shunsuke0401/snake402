@@ -18,7 +18,8 @@ import {
   ARENA_BOUNDARY_COLOR,
   ARENA_WARNING_COLOR,
   POSITION_CORRECTION_THRESHOLD,
-  SNAKE_INITIAL_LENGTH
+  SNAKE_INITIAL_LENGTH,
+  BOOST_MULTIPLIER
 } from './config';
 
 // Remote player visual representation
@@ -82,15 +83,59 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.setupWorld();
-    this.setupNetworking();
-    this.setupInput(); // Move after networking so netClient is available
-    this.setupGame();
-    this.setupCamera();
-    this.setupUI();
-    this.setupEventListeners();
+    console.log('🎮 GameScene.create() called');
     
-    this.gameStartTime = this.time.now;
+    try {
+      // Ensure PreGameScene is stopped
+      const preGameScene = this.scene.get('PreGameScene');
+      if (preGameScene && preGameScene.scene.isActive()) {
+        console.log('🛑 Stopping PreGameScene...');
+        this.scene.stop('PreGameScene');
+      }
+      
+      // Get nickname from registry (set by PreGameScene)
+      const nickname = this.registry.get('playerNickname') || 'Player';
+      console.log(`👤 Player nickname: ${nickname}`);
+      
+      console.log('🔧 Starting setupWorld...');
+      this.setupWorld();
+      console.log('✅ World setup complete');
+      
+      console.log('🔧 Starting setupNetworking...');
+      this.setupNetworking(nickname);
+      console.log('✅ Networking setup complete');
+      
+      console.log('🔧 Starting setupInput...');
+      this.setupInput(); // Move after networking so netClient is available
+      console.log('✅ Input setup complete');
+      
+      console.log('🔧 Starting setupKeyboardInput...');
+      this.setupKeyboardInput(); // Setup Enter/Space restart
+      console.log('✅ Keyboard setup complete');
+      
+      console.log('🔧 Starting setupGame...');
+      this.setupGame();
+      console.log('✅ Game setup complete');
+      
+      console.log('🔧 Starting setupCamera...');
+      this.setupCamera();
+      console.log('✅ Camera setup complete');
+      
+      console.log('🔧 Starting setupUI...');
+      this.setupUI();
+      console.log('✅ UI setup complete');
+      
+      console.log('🔧 Starting setupEventListeners...');
+      this.setupEventListeners();
+      console.log('✅ Event listeners setup complete');
+      
+      this.gameStartTime = this.time.now;
+      console.log('✅ GameScene fully initialized!');
+    } catch (error) {
+      console.error('❌ Error in GameScene.create():', error);
+      console.error('❌ Error stack:', error instanceof Error ? error.stack : 'no stack');
+      // Don't throw - try to recover
+    }
   }
 
   private setupWorld(): void {
@@ -181,8 +226,9 @@ export class GameScene extends Phaser.Scene {
     console.log('🔧 Input setup complete');
   }
 
-  private setupNetworking(): void {
+  private setupNetworking(nickname: string = 'Player'): void {
     this.netClient = new NetClient();
+    this.netClient.setNickname(nickname);
     
     // Set up event handlers
     this.netClient.on('connected', (playerId: string, spawnPosition: { x: number; y: number }) => {
@@ -217,9 +263,30 @@ export class GameScene extends Phaser.Scene {
       // Remote player spawning is handled in state updates
     });
     
-    this.netClient.on('playerDied', (playerId: string, reason: string) => {
-      console.log(`Player ${playerId} died: ${reason}`);
+    this.netClient.on('playerDied', (playerId: string, reason: string, food: NetworkFoodItem[]) => {
+      console.log(`💀 Player ${playerId} died: ${reason}`);
+      
+      // Remove dead player
       this.removeRemotePlayer(playerId);
+      
+      // If it's the local player, show game over
+      if (playerId === this.playerId && this.snake) {
+        this.showGameOver(reason);
+      }
+      
+      // Spawn dropped food
+      for (const foodItem of food) {
+        this.addNetworkFood(foodItem);
+      }
+    });
+    
+    this.netClient.on('playerRespawned', (playerId: string, position: { x: number; y: number }) => {
+      console.log(`🔄 Player ${playerId} respawned at (${position.x.toFixed(0)}, ${position.y.toFixed(0)})`);
+      
+      // If it's the local player, reset snake
+      if (playerId === this.playerId && this.snake) {
+        this.handleRespawn(position);
+      }
     });
     
     this.netClient.on('foodEaten', (foodId: string, by: string) => {
@@ -339,7 +406,9 @@ export class GameScene extends Phaser.Scene {
           y: foodData.y,
           color: foodData.color,
           size: foodData.size,
-          type: foodData.type as 'small' | 'large'
+          type: foodData.type as 'small' | 'large',
+          score: foodData.type === 'large' ? 10 : 1, // Default score based on type
+          growthAmount: foodData.type === 'large' ? 2 : 1 // Default growth based on type
         };
         
         if (!this.networkFood.has(food.id)) {
@@ -433,6 +502,106 @@ export class GameScene extends Phaser.Scene {
     // Listen for UI events
     this.uiScene.events.on('restartGame', this.restartGame, this);
     this.uiScene.events.on('gameOver', this.handleGameOver, this);
+  }
+
+  private setupKeyboardInput(): void {
+    // Handle Enter/Space for restart (works anytime)
+    if (!this.input.keyboard) {
+      console.warn('⚠️ Keyboard input not available');
+      return;
+    }
+
+    this.input.keyboard.on('keydown', (event: KeyboardEvent) => {
+      // Check both key and code for compatibility
+      const key = event.key.toLowerCase();
+      const code = event.code;
+      
+      // Restart game
+      if (key === ' ' || key === 'enter' || code === 'Space' || code === 'Enter') {
+        event.preventDefault(); // Prevent page scroll on Space
+        console.log('🔄 Restart requested (Enter/Space pressed)', { key, code });
+        this.restartGame();
+        return;
+      }
+
+      // Testing controls (only when connected)
+      if (this.isConnected && this.netClient) {
+        switch (key) {
+          case '1':
+            event.preventDefault();
+            console.log('🐍 Spawning test snake at (4500, 4500)');
+            console.log('🔗 Connection status:', this.isConnected, 'NetClient:', !!this.netClient);
+            if (this.netClient) {
+              console.log('📤 Sending admin command...');
+              this.netClient.sendAdminCommand({ type: 'admin_spawn_test_snake' });
+              console.log('✅ Admin command sent');
+            } else {
+              console.error('❌ NetClient not available');
+            }
+            this.showTestingMessage('Spawned test snake at (4500, 4500)');
+            break;
+          case 'c':
+            event.preventDefault();
+            console.log('🧹 Clearing test snake...');
+            this.netClient.sendAdminCommand({ type: 'admin_clear_bots' });
+            this.showTestingMessage('Cleared test snake');
+            break;
+          case 'h':
+            event.preventDefault();
+            this.showTestingHelp();
+            break;
+        }
+      }
+    });
+  }
+
+  private showTestingMessage(message: string): void {
+    // Create a temporary message display
+    const messageText = this.add.text(this.cameras.main.centerX, this.cameras.main.centerY - 100, message, {
+      fontSize: '24px',
+      color: '#00ff00',
+      backgroundColor: '#000000',
+      padding: { x: 10, y: 5 }
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+
+    // Fade out after 2 seconds
+    this.tweens.add({
+      targets: messageText,
+      alpha: 0,
+      duration: 2000,
+      ease: 'Power2',
+      onComplete: () => messageText.destroy()
+    });
+  }
+
+  private showTestingHelp(): void {
+    const helpText = [
+      'SIMPLE COLLISION TEST:',
+      '1 - Spawn test snake at (4500, 4500)',
+      'C - Clear test snake',
+      'H - Show this help',
+      '',
+      'The test snake has length 5 and',
+      'is positioned at the center of the arena.'
+    ].join('\n');
+
+    const helpDisplay = this.add.text(this.cameras.main.centerX, this.cameras.main.centerY, helpText, {
+      fontSize: '18px',
+      color: '#ffffff',
+      backgroundColor: '#000000',
+      padding: { x: 15, y: 10 },
+      align: 'left'
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+
+    // Remove after 5 seconds or on any key press
+    const removeHelp = () => {
+      if (helpDisplay && helpDisplay.active) {
+        helpDisplay.destroy();
+      }
+    };
+
+    this.time.delayedCall(5000, removeHelp);
+    this.input.keyboard?.once('keydown', removeHelp);
   }
 
   private handleInput(): void {
@@ -632,7 +801,7 @@ export class GameScene extends Phaser.Scene {
       
       // Ensure immediate removal from scene
       // Set inactive first to remove from render list immediately
-      if (foodItem.graphics && !foodItem.graphics.destroyed) {
+      if (foodItem.graphics && foodItem.graphics.active) {
         foodItem.graphics.setActive(false);
         foodItem.graphics.setVisible(false);
         
@@ -890,6 +1059,21 @@ export class GameScene extends Phaser.Scene {
 
 
   private updateRemotePlayers(players: NetworkPlayerState[]): void {
+    console.log(`🔄 Updating remote players:`, players.length, players.map(p => ({ id: p.id, segments: p.segments?.length || 0 })));
+    
+    // Log static snakes received from server
+    const staticSnakes = players.filter(p => p.id.startsWith('static_snake_'));
+    if (staticSnakes.length > 0) {
+      console.log(`🎯 Client received ${staticSnakes.length} static snakes:`);
+      staticSnakes.forEach(snake => {
+        console.log(`  - Snake ${snake.id} at (${snake.x}, ${snake.y}) with ${snake.segments?.length || 0} segments`);
+        if (snake.segments && snake.segments.length > 0) {
+          console.log(`    First segment: (${snake.segments[0].x}, ${snake.segments[0].y})`);
+          console.log(`    Last segment: (${snake.segments[snake.segments.length - 1].x}, ${snake.segments[snake.segments.length - 1].y})`);
+        }
+      });
+    }
+    
     // Update existing remote players and add new ones
     for (const playerState of players) {
       if (playerState.id === this.playerId) continue; // Skip own player
@@ -900,6 +1084,16 @@ export class GameScene extends Phaser.Scene {
         // Create new remote player visual
         remotePlayer = this.createRemotePlayerVisual(playerState.id);
         this.remotePlayers.set(playerState.id, remotePlayer);
+      }
+      
+      if (playerState.id.startsWith('static_snake_')) {
+        console.log(`🐍 Updating static snake:`, {
+          id: playerState.id,
+          x: playerState.x,
+          y: playerState.y,
+          segments: playerState.segments?.length || 0,
+          segmentData: playerState.segments
+        });
       }
       
       // Update visual representation
@@ -928,16 +1122,42 @@ export class GameScene extends Phaser.Scene {
     // Clear previous drawing
     remotePlayer.graphics.clear();
     
+    if (state.id.startsWith('static_snake_')) {
+      console.log(`🎨 Rendering static snake:`, {
+        id: state.id,
+        segments: state.segments?.length || 0,
+        hasSegments: !!state.segments,
+        segmentData: state.segments,
+        cameraPosition: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY }
+      });
+    }
+    
     // Draw snake segments
-    for (let i = 0; i < state.segments.length; i++) {
-      const segment = state.segments[i];
-      const isHead = i === 0;
+    if (state.segments && state.segments.length > 0) {
+      for (let i = 0; i < state.segments.length; i++) {
+        const segment = state.segments[i];
+        const isHead = i === 0;
+        
+        // Use different colors for remote players
+        const color = isHead ? 0x2196F3 : 0x64B5F6; // Blue tones for remote players
+        
+        remotePlayer.graphics.fillStyle(color);
+        remotePlayer.graphics.fillCircle(segment.x, segment.y, GRID_SIZE / 2);
+        
+        if (state.id.startsWith('static_snake_')) {
+          console.log(`🔵 Drawing segment ${i}:`, { x: segment.x, y: segment.y, color, isHead, radius: GRID_SIZE / 2 });
+        }
+      }
       
-      // Use different colors for remote players
-      const color = isHead ? 0x2196F3 : 0x64B5F6; // Blue tones for remote players
-      
-      remotePlayer.graphics.fillStyle(color);
-      remotePlayer.graphics.fillCircle(segment.x, segment.y, GRID_SIZE / 2);
+      if (state.id.startsWith('static_snake_')) {
+        console.log(`✅ Finished drawing ${state.segments.length} segments for ${state.id}`);
+      }
+    } else {
+      if (state.id.startsWith('static_snake_')) {
+        console.warn(`⚠️ No segments available for static snake ${state.id}!`);
+      } else {
+        console.log(`⚠️ No segments to draw for player:`, state.id);
+      }
     }
   }
 
@@ -999,7 +1219,7 @@ export class GameScene extends Phaser.Scene {
       console.log(`✅ Found food ${foodId} in Map, removing...`);
       
       // Check if graphics is valid before destroying
-      if (foodItem.graphics && !foodItem.graphics.destroyed) {
+      if (foodItem.graphics && foodItem.graphics.active) {
         console.log(`🍎 Destroying graphics for food ${foodId}`);
         foodItem.graphics.destroy();
       } else {
@@ -1036,9 +1256,49 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private gameOver(reason: string): void {
+  private showGameOver(reason: string): void {
+    console.log(`🎮 GAME OVER - ${reason}`);
+    
+    // Stop snake movement
+    if (this.snake) {
+      this.snake.setAlive(false);
+    }
+    
+    // Show game over message
     this.isGameActive = false;
-    this.uiScene.showGameOver(reason);
+    
+    // Try to show game over overlay if UI scene supports it
+    if (this.uiScene && typeof (this.uiScene as any).showGameOver === 'function') {
+      (this.uiScene as any).showGameOver(reason);
+    } else {
+      // Fallback: just log it
+      const message = reason === 'wall' ? 'Hit the wall!' : 'Killed by another snake!';
+      console.log(`GAME OVER: ${message}`);
+    }
+  }
+  
+  private handleRespawn(position: { x: number; y: number }): void {
+    console.log(`🔄 Respawned at (${position.x.toFixed(0)}, ${position.y.toFixed(0)})`);
+    
+    // Reset snake position
+    if (this.snake) {
+      this.snake.setPosition(position.x, position.y);
+      this.snake.setAlive(true);
+      this.snake.setLength(3); // Reset to initial length
+    }
+    
+    // Reset score
+    this.score = 0;
+    if (this.uiScene) {
+      this.uiScene.updateScore(0);
+      this.uiScene.updateLength('3');
+    }
+    
+    this.isGameActive = true;
+  }
+
+  private gameOver(reason: string): void {
+    this.showGameOver(reason);
   }
 
   private handleGameOver(): void {
@@ -1046,12 +1306,22 @@ export class GameScene extends Phaser.Scene {
   }
 
   private restartGame(): void {
-    // Disconnect and reconnect for a fresh start
-    this.netClient.disconnect();
+    console.log('🔄 Restarting game...');
+    
+    // Reset UI state
+    if (this.uiScene) {
+      this.uiScene.events.emit('restartGame');
+    }
+    
+    // Disconnect from server
+    if (this.netClient) {
+      this.netClient.disconnect();
+    }
     
     // Clear all game objects
     if (this.snake) {
       this.snake.destroy();
+      this.snake = null as any; // Reset reference
     }
     
     // Only destroy foodManager if it exists (it won't in networked gameplay)
@@ -1062,13 +1332,22 @@ export class GameScene extends Phaser.Scene {
     this.clearRemotePlayers();
     this.clearNetworkFood();
     
-    // Reset game state
-    this.score = 0;
+    // Reset flags
+    this.hasReceivedInitialFood = false;
     this.isGameActive = true;
+    this.isConnected = false;
+    this.playerId = null;
+    this.score = 0;
     this.gameStartTime = this.time.now;
     
-    // Reconnect to server
-    this.setupNetworking();
+    // Reset camera
+    this.cameras.main.setPosition(0, 0);
+    
+    // Small delay before reconnecting to ensure cleanup
+    this.time.delayedCall(100, () => {
+      // Reconnect to server (will spawn new player)
+      this.setupNetworking();
+    });
   }
 
   update(time: number, delta: number): void {
@@ -1094,6 +1373,12 @@ export class GameScene extends Phaser.Scene {
     // Update local snake with client-side prediction
     if (this.snake && this.useLocalPrediction) {
       this.snake.update(delta);
+    }
+    
+    // Update coordinates display
+    if (this.snake && this.uiScene) {
+      const head = this.snake.getHeadPosition();
+      this.uiScene.updateCoordinates(head.x, head.y);
     }
     
     // Local food manager disabled for networked gameplay

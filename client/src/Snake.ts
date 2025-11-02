@@ -27,6 +27,7 @@ export class Snake {
   private speed: number = BASE_SPEED;
   private isBoosting: boolean = false;
   private boostTime: number = 0; // Track time spent boosting
+  private alive: boolean = true; // Track if snake is alive
 
   constructor(scene: Phaser.Scene, startX: number, startY: number) {
     this.scene = scene;
@@ -95,6 +96,9 @@ export class Snake {
   }
 
   public update(delta: number): void {
+    // Don't update if snake is dead
+    if (!this.alive) return;
+    
     // Smooth rotation towards target angle
     this.updateRotation();
     
@@ -320,6 +324,48 @@ export class Snake {
       
       // Redraw the head with the corrected position
       this.drawSegment(this.segments[0], true);
+    }
+  }
+
+  public setAlive(value: boolean): void {
+    this.alive = value;
+  }
+
+  public setPosition(x: number, y: number): void {
+    if (this.segments.length > 0) {
+      // Update head position
+      this.segments[0].x = x;
+      this.segments[0].y = y;
+      this.drawSegment(this.segments[0], true);
+      
+      // Update other segments relative to head
+      for (let i = 1; i < this.segments.length; i++) {
+        this.segments[i].x = x - i * GRID_SIZE * Math.cos(this.angle);
+        this.segments[i].y = y - i * GRID_SIZE * Math.sin(this.angle);
+        this.drawSegment(this.segments[i], false);
+      }
+    }
+  }
+
+  public setLength(length: number): void {
+    // Grow or shrink segments to match target length
+    while (this.segments.length < length) {
+      const lastSegment = this.segments[this.segments.length - 1];
+      const graphics = this.scene.add.graphics();
+      const newSegment: SnakeSegment = {
+        x: lastSegment.x,
+        y: lastSegment.y,
+        graphics
+      };
+      this.segments.push(newSegment);
+      this.drawSegment(newSegment, false);
+    }
+    
+    while (this.segments.length > length) {
+      const segment = this.segments.pop();
+      if (segment) {
+        segment.graphics.destroy();
+      }
     }
   }
 

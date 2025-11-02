@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { PreGameScene } from './PreGameScene';
 import { GameScene } from './GameScene';
 import { UIScene } from './UIScene';
 
@@ -20,7 +21,7 @@ const config: Phaser.Types.Core.GameConfig = {
   height: 800,
   parent: 'game-container',
   backgroundColor: '#1a1a1a',
-  scene: [GameScene, UIScene],
+  scene: [PreGameScene, GameScene, UIScene],
   physics: {
     default: 'arcade',
     arcade: {
