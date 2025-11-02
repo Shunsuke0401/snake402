@@ -87,6 +87,12 @@ export const FOOD_COLOR = FOOD_TYPES[FoodType.SMALL].color;
 export const FOOD_SIZE = FOOD_TYPES[FoodType.SMALL].size;
 export const FOOD_SCORE = FOOD_TYPES[FoodType.SMALL].score;
 
+// Collision detection settings
+export const FOOD_RADIUS = 15; // Food collision radius in pixels
+export const SNAKE_EAT_RADIUS = 25; // Snake head eating radius in pixels
+export const COLLISION_CHECK_INTERVAL = 100; // ms - how often to check for collisions (reduced for debugging)
+export const COLLISION_SPATIAL_CULLING_DISTANCE = 300; // Only check collisions within this distance
+
 // Camera settings
 export const CAMERA_FOLLOW_SPEED = 0.05; // Lag factor for smooth following
 export const CAMERA_ZOOM = 1;
