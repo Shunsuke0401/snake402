@@ -258,6 +258,18 @@ export class Snake {
     const head = this.segments[0];
     return { x: head.x, y: head.y };
   }
+  
+  public getAngle(): number {
+    return this.angle;
+  }
+  
+  public getIsBoosting(): boolean {
+    return this.isBoosting;
+  }
+  
+  public getSpeed(): number {
+    return this.speed;
+  }
 
   public getHeadGridPosition(): { gridX: number; gridY: number } {
     const head = this.segments[0];

@@ -5,7 +5,7 @@ import { UIScene } from './UIScene';
 // Health check function to verify server connectivity
 async function healthCheck(): Promise<void> {
   try {
-    const response = await fetch('http://localhost:8081/health');
+    const response = await fetch('http://localhost:8080/health');
     const data = await response.json();
     console.log('Server health check:', data);
   } catch (error) {

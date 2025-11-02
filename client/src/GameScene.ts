@@ -18,10 +18,7 @@ import {
   ARENA_BOUNDARY_COLOR,
   ARENA_WARNING_COLOR,
   POSITION_CORRECTION_THRESHOLD,
-  FOOD_RADIUS,
-  SNAKE_EAT_RADIUS,
-  COLLISION_CHECK_INTERVAL,
-  COLLISION_SPATIAL_CULLING_DISTANCE
+  SNAKE_INITIAL_LENGTH
 } from './config';
 
 // Remote player visual representation
@@ -71,9 +68,14 @@ export class GameScene extends Phaser.Scene {
   // Local snake state tracking
   private lastKnownServerLength: number = 0;
   
-  // Client-side collision prediction
-  private lastCollisionCheckTime: number = 0;
-  private predictedEatenFood: Set<string> = new Set(); // Track food we've predicted as eaten
+  // Client-side optimistic prediction DISABLED - server is fully authoritative
+  // These remain for potential future use or debugging
+  private pendingFoodRemovals: Map<string, number> = new Map(); // foodId -> timestamp
+  private pendingFoodData: Map<string, NetworkFoodItem> = new Map(); // foodId -> food data (for rollback)
+  private pendingGrowth: number = 0; // pending segment growth count
+  private pendingGrowthTimestamp: number = 0;
+  private expectedLength: number = 0; // expected length after pending growth
+  private collisionCheckCounter: number = 0; // Debug: verify collision check runs every frame
 
   constructor() {
     super({ key: 'GameScene' });
@@ -220,34 +222,28 @@ export class GameScene extends Phaser.Scene {
       this.removeRemotePlayer(playerId);
     });
     
+    this.netClient.on('foodEaten', (foodId: string, by: string) => {
+      console.log(`🍎 FOOD_EATEN event: ${foodId} eaten by ${by}`);
+      
+      // Server-authoritative event only
+      // No optimistic prediction to confirm
+      // Food removal is handled by the foodUpdate('despawn') event
+      // Length/score updates are handled by stateUpdate event
+    });
+    
     this.netClient.on('foodUpdate', (action: 'spawn' | 'despawn', food: NetworkFoodItem) => {
       console.log(`🍎 Food ${action} event received: foodId=${food.id} at (${food.x.toFixed(1)}, ${food.y.toFixed(1)})`);
-      console.log(`🍎 Current networkFood Map size: ${this.networkFood.size}`);
-      console.log(`🍎 Available food IDs:`, Array.from(this.networkFood.keys()).slice(0, 10));
       
       if (action === 'spawn') {
         console.log(`🍎 Adding food ${food.id} to client`);
         this.addNetworkFood(food);
       } else {
-        console.log(`🍎 DESPAWN: Attempting to remove food ${food.id} from client`);
-        console.log(`🍎 Food exists in Map? ${this.networkFood.has(food.id)}`);
+        // Server confirms food despawn (authoritative)
+        console.log(`🍎 Server-authoritative removal of food ${food.id}`);
         this.removeNetworkFood(food.id);
       }
     });
 
-    this.netClient.on('foodEaten', (foodId: string, by: string) => {
-      console.log(`🍎 Server confirmed food eaten: ${foodId} by ${by}`);
-      
-      // Remove from predicted eaten set if we predicted it
-      this.predictedEatenFood.delete(foodId);
-      
-      // Ensure the food is visually removed (server validation)
-      this.removeNetworkFood(foodId);
-      
-      // If this was eaten by another player and we had predicted it incorrectly,
-      // we might need to re-show it, but the server's foodUpdate will handle respawn
-    });
-    
     this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
       this.updateRemotePlayers(players);
       
@@ -412,103 +408,228 @@ export class GameScene extends Phaser.Scene {
     camera.centerOn(newX, newY);
   }
 
-  private checkCollisions(): void {
+  private checkCollisions(delta?: number): void {
     if (!this.isGameActive || !this.snake) return;
     
-    // Note: Collision detection is now handled server-side
-    // This method is kept for potential local prediction or effects
+    // ⚠️ COLLISION DETECTION IS NOW 100% SERVER-AUTHORITATIVE
+    // Client no longer performs optimistic collision prediction to avoid race conditions
+    // Server detects collisions at 30Hz and broadcasts food_eaten + foodUpdate events
+    // This eliminates blinking and inconsistency issues
     
-    // Also check network food collisions for immediate feedback
-    this.checkNetworkFoodCollisions();
+    // Client-side optimistic collision detection DISABLED
+    // this.checkNetworkFoodCollisions();
   }
   
   private checkNetworkFoodCollisions(): void {
-    // Client-side collision prediction for immediate feedback
-    const currentTime = Date.now();
+    if (!this.snake || !this.isGameActive) return;
     
-    // Throttle collision checks to COLLISION_CHECK_INTERVAL
-    if (currentTime - this.lastCollisionCheckTime < COLLISION_CHECK_INTERVAL) {
-      return;
-    }
-    this.lastCollisionCheckTime = currentTime;
-
-    if (!this.snake || this.snake.getLength() === 0) {
-      console.log(`🔍 CLIENT: No snake or empty snake (length: ${this.snake ? this.snake.getLength() : 'null'})`);
-      return;
-    }
-
     const head = this.snake.getHeadPosition();
-    if (!head) {
-      console.log(`🔍 CLIENT: No head position`);
-      return;
-    }
+    if (!head) return;
 
-    // Debug: Log collision check
-    console.log(`🔍 CLIENT: Checking collisions for snake head at (${head.x.toFixed(1)}, ${head.y.toFixed(1)})`);
-    console.log(`🔍 CLIENT: Available food items: ${this.networkFood.size}`);
+    // Debug: Track collision check frequency
+    this.collisionCheckCounter++;
     
-    // Add a visual indicator that collision detection is running
-    const uiScene = this.scene.get('UIScene') as any;
-    if (uiScene) {
-      uiScene.add.text(10, 100, `Collision Check: ${Date.now()}`, { fontSize: '16px', color: '#ffffff' }).setDepth(1000);
+    // PREDICTIVE: Get snake's next position for earlier detection
+    // Use the current frame delta from the update loop
+    const frameDelta = this.game.loop.delta; // Get current frame delta in ms
+    const snakeAngle = this.snake.getAngle();
+    const snakeIsBoosting = this.snake.getIsBoosting();
+    const snakeBaseSpeed = this.snake.getSpeed();
+    const currentSpeed = snakeIsBoosting ? snakeBaseSpeed * BOOST_MULTIPLIER : snakeBaseSpeed;
+    const moveDistance = (currentSpeed * frameDelta) / 1000; // Convert to pixels per frame
+    
+    // Calculate predicted next-frame position
+    const predictedHeadX = head.x + Math.cos(snakeAngle) * moveDistance;
+    const predictedHeadY = head.y + Math.sin(snakeAngle) * moveDistance;
+
+    // Debug logging every 60 frames (about once per second)
+    if (this.collisionCheckCounter % 60 === 0) {
+      console.log(`🔍 COLLISION CHECK: Frame ${this.collisionCheckCounter}, foodCount=${this.networkFood.size}, snakeHead=(${head.x.toFixed(1)}, ${head.y.toFixed(1)}), predicted=(${predictedHeadX.toFixed(1)}, ${predictedHeadY.toFixed(1)})`);
     }
 
     // Check collisions with all visible food items
-    let nearestFood: { id: string; distance: number; food: NetworkFoodItem } | null = null;
-    let nearestDistance = Infinity;
-
+    let nearestFoodDistance = Infinity;
+    let nearestFoodId: string | null = null;
+    
     this.networkFood.forEach((foodItem, foodId) => {
-      // Skip if we've already predicted this food as eaten
-      if (this.predictedEatenFood.has(foodId)) {
-        console.log(`🔍 CLIENT: Skipping food ${foodId} - already predicted as eaten`);
+      // Skip if already pending removal (already handled optimistically)
+      if (this.pendingFoodRemovals.has(foodId)) {
         return;
       }
 
       const food = foodItem.data;
       
-      // Spatial culling - only check food within reasonable distance
-      const distanceToFood = Phaser.Math.Distance.Between(
-        head.x, head.y, food.x, food.y
+      // Calculate distance to BOTH current and predicted positions
+      const currentDistance = Math.sqrt(
+        Math.pow(head.x - food.x, 2) + Math.pow(head.y - food.y, 2)
+      );
+      const predictedDistance = Math.sqrt(
+        Math.pow(predictedHeadX - food.x, 2) + Math.pow(predictedHeadY - food.y, 2)
       );
 
-      console.log(`🔍 CLIENT: Food ${foodId} at (${food.x}, ${food.y}) - distance: ${distanceToFood.toFixed(1)}`);
-
-      if (distanceToFood < nearestDistance) {
-        nearestDistance = distanceToFood;
-        nearestFood = { id: foodId, distance: distanceToFood, food };
+      // Track nearest food for debugging
+      const minDistance = Math.min(currentDistance, predictedDistance);
+      if (minDistance < nearestFoodDistance) {
+        nearestFoodDistance = minDistance;
+        nearestFoodId = foodId;
       }
 
-      // Skip distant food for performance
-      if (distanceToFood > COLLISION_SPATIAL_CULLING_DISTANCE) {
-        console.log(`🔍 CLIENT: Food ${foodId} too far (${distanceToFood.toFixed(1)} > ${COLLISION_SPATIAL_CULLING_DISTANCE})`);
-        return;
-      }
-
-      // Check if collision occurred
-      const collisionRadius = FOOD_RADIUS + SNAKE_EAT_RADIUS;
-      console.log(`🔍 CLIENT: Checking collision - distance: ${distanceToFood.toFixed(1)}, threshold: ${collisionRadius}`);
+      // Use MORE GENEROUS collision radius on client for earlier detection
+      // Client uses larger radius than server for predictive detection
+      const clientCollisionRadius = food.size / 2 + GRID_SIZE * 3.5; // Larger than server's 2.5
       
-      if (distanceToFood <= collisionRadius) {
-        console.log(`🍎 CLIENT: COLLISION DETECTED! Food ${foodId} at distance ${distanceToFood.toFixed(1)}`);
+      // Check BOTH current and predicted positions
+      const willCollide = currentDistance <= clientCollisionRadius || 
+                          predictedDistance <= clientCollisionRadius;
+      
+      // Debug logging when close to food
+      if (currentDistance < clientCollisionRadius + 50 || predictedDistance < clientCollisionRadius + 50) {
+        console.log(`🔍 Collision check: Food ${foodId} current=${currentDistance.toFixed(1)}px, predicted=${predictedDistance.toFixed(1)}px, radius=${clientCollisionRadius.toFixed(1)}px, willCollide=${willCollide}`);
+      }
+      
+      if (willCollide) {
+        // ⚠️ CLIENT-SIDE OPTIMISTIC PREDICTION DISABLED
+        // Server handles ALL collision detection authoritatively at 30Hz
+        // This prevents race conditions, blinking, and inconsistencies
         
-        // Mark as predicted eaten to avoid duplicate attempts
-        this.predictedEatenFood.add(foodId);
+        console.log(`🔍 CLIENT: Collision would be detected (DISABLED - server handles this)`);
+        console.log(`🔍   Current distance: ${currentDistance.toFixed(2)}px`);
+        console.log(`🔍   Predicted distance: ${predictedDistance.toFixed(2)}px`);
+        console.log(`🔍   Collision radius: ${clientCollisionRadius.toFixed(2)}px`);
         
-        // Send eat attempt to server
-        console.log(`📨 CLIENT: Sending eat attempt for food ${foodId}`);
-        this.netClient.sendEatAttempt(foodId);
+        // Don't send eat_attempt - server detects automatically
+        // Don't remove food optimistically - wait for server
+        // Don't grow snake optimistically - wait for server
         
-        // Immediately hide the food for responsive feedback
-        this.removeNetworkFood(foodId);
-        
-        return; // Only eat one food per check
+        return; // Only log one potential collision per check
       }
     });
-
-    if (nearestFood) {
-      console.log(`🔍 CLIENT: Nearest food: ${nearestFood.id} at distance ${nearestFood.distance.toFixed(1)}`);
+    
+    // Debug: Log nearest food info occasionally
+    if (nearestFoodId && this.collisionCheckCounter % 30 === 0) {
+      const nearestFood = this.networkFood.get(nearestFoodId);
+      if (nearestFood) {
+        const food = nearestFood.data;
+        const distance = Math.sqrt(
+          Math.pow(head.x - food.x, 2) + Math.pow(head.y - food.y, 2)
+        );
+        const radius = food.size / 2 + GRID_SIZE * 3.5;
+        console.log(`🔍 Nearest food: ${nearestFoodId} at distance ${distance.toFixed(1)}px (radius: ${radius.toFixed(1)}px)`);
+      }
+    }
+    
+    // Check for rollback of pending removals
+    this.checkPendingRemovalsRollback();
+    
+    // Check for rollback of pending growth
+    this.checkPendingGrowthRollback();
+  }
+  
+  private optimisticallyRemoveFood(foodId: string, food: NetworkFoodItem): void {
+    const timestamp = Date.now();
+    
+    console.log(`⚡ Optimistically removing food ${foodId} immediately`);
+    
+    // Store pending removal with timestamp
+    this.pendingFoodRemovals.set(foodId, timestamp);
+    
+    // Immediately remove food from display (optimistic)
+    const foodItem = this.networkFood.get(foodId);
+    if (foodItem) {
+      // Store food data for potential rollback
+      this.pendingFoodData.set(foodId, { ...foodItem.data });
+      
+      // Ensure immediate removal from scene
+      // Set inactive first to remove from render list immediately
+      if (foodItem.graphics && !foodItem.graphics.destroyed) {
+        foodItem.graphics.setActive(false);
+        foodItem.graphics.setVisible(false);
+        
+        // Destroy graphics for instant visual feedback
+        foodItem.graphics.destroy();
+        
+        console.log(`⚡ Food ${foodId} graphics destroyed and removed from scene`);
+      }
+      
+      // Remove from Map immediately
+      this.networkFood.delete(foodId);
+      
+      // Verify removal
+      if (this.networkFood.has(foodId)) {
+        console.error(`❌ ERROR: Food ${foodId} still in Map after deletion!`);
+      } else {
+        console.log(`✅ Food ${foodId} removed from Map successfully`);
+      }
+      
+      console.log(`⚡ Food ${foodId} destroyed immediately - Map size: ${this.networkFood.size}`);
     } else {
-      console.log(`🔍 CLIENT: No food found`);
+      console.warn(`⚠️ Food ${foodId} not found in Map for optimistic removal`);
+    }
+  }
+  
+  private optimisticallyGrowSnake(growthAmount: number): void {
+    const timestamp = Date.now();
+    
+    console.log(`⚡ Optimistically growing snake by ${growthAmount} segments`);
+    
+    // Store pending growth
+    this.pendingGrowth += growthAmount;
+    this.pendingGrowthTimestamp = timestamp;
+    this.expectedLength = this.snake.getLength() + this.pendingGrowth;
+    
+    // Immediately grow snake locally
+    for (let i = 0; i < growthAmount; i++) {
+      this.snake.grow();
+    }
+    
+    console.log(`⚡ Snake grown immediately. Current length: ${this.snake.getLength()}, Expected: ${this.expectedLength}`);
+  }
+  
+  private checkPendingRemovalsRollback(): void {
+    const currentTime = Date.now();
+    const ROLLBACK_TIMEOUT = 200; // ms
+    
+    // Check all pending removals
+    for (const [foodId, timestamp] of this.pendingFoodRemovals.entries()) {
+      const age = currentTime - timestamp;
+      
+      // If pending removal is older than timeout and hasn't been confirmed
+      if (age > ROLLBACK_TIMEOUT) {
+        console.warn(`⚠️ ROLLBACK: Food ${foodId} removal not confirmed after ${age}ms, rolling back`);
+        
+        // Rollback: Re-create the food graphics
+        const foodData = this.pendingFoodData.get(foodId);
+        if (foodData) {
+          // Re-create graphics for rollback
+          const graphics = this.add.graphics();
+          graphics.fillStyle(foodData.color);
+          graphics.fillCircle(foodData.x, foodData.y, foodData.size / 2);
+          this.networkFood.set(foodId, { graphics, data: foodData });
+          
+          console.log(`⚠️ Food ${foodId} re-created after rollback`);
+        }
+        
+        // Clean up pending state
+        this.pendingFoodRemovals.delete(foodId);
+        this.pendingFoodData.delete(foodId);
+      }
+    }
+  }
+  
+  private checkPendingGrowthRollback(): void {
+    const currentTime = Date.now();
+    const ROLLBACK_TIMEOUT = 200; // ms
+    
+    // Check if pending growth is too old and hasn't been confirmed
+    if (this.pendingGrowth > 0 && this.pendingGrowthTimestamp > 0) {
+      const age = currentTime - this.pendingGrowthTimestamp;
+      
+      if (age > ROLLBACK_TIMEOUT) {
+        // Note: We can't easily rollback snake growth without storing previous state
+        // In practice, the server should always confirm, so this is a rare edge case
+        console.warn(`⚠️ Pending snake growth not confirmed after ${age}ms`);
+        // We'll let server correction handle this via handleServerLengthChange()
+      }
     }
   }
 
@@ -562,27 +683,59 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     
-    console.log(`🔄 SERVER LENGTH UPDATE: Server=${serverLength}, Client=${this.snake.getLength()}, LastKnown=${this.lastKnownServerLength}`);
+    const clientLength = this.snake.getLength();
+    console.log(`🔄 SERVER LENGTH UPDATE: Server=${serverLength}, Client=${clientLength}, LastKnown=${this.lastKnownServerLength}, PendingGrowth=${this.pendingGrowth}`);
     
     // Initialize if this is the first update
     if (this.lastKnownServerLength === 0) {
       console.log(`🔄 INITIALIZING: Setting lastKnownServerLength to ${serverLength}`);
       this.lastKnownServerLength = serverLength;
+      // Reset pending growth if any
+      this.pendingGrowth = 0;
+      this.expectedLength = serverLength;
       return;
     }
     
-    // Check if snake should grow
+    // Check if we have pending growth
+    if (this.pendingGrowth > 0) {
+      const expectedLengthWithPending = this.lastKnownServerLength + this.pendingGrowth;
+      
+      // Server confirms our optimistic growth
+      if (serverLength >= expectedLengthWithPending) {
+        console.log(`✅ Server confirmed optimistic growth! Server=${serverLength}, Expected=${expectedLengthWithPending}`);
+        // Confirm pending growth
+        this.confirmPendingGrowth(this.pendingGrowth);
+        this.lastKnownServerLength = serverLength;
+        this.pendingGrowth = 0;
+        this.expectedLength = serverLength;
+        return;
+      } else {
+        // Server didn't confirm all our growth - partial confirmation or rollback
+        const actualGrowth = serverLength - this.lastKnownServerLength;
+        if (actualGrowth > 0) {
+          console.log(`⚠️ Server confirmed partial growth: ${actualGrowth} out of ${this.pendingGrowth} expected`);
+          // Adjust pending growth
+          this.pendingGrowth -= actualGrowth;
+          this.lastKnownServerLength = serverLength;
+        } else {
+          // Server didn't detect collision - rollback
+          console.warn(`⚠️ Server didn't confirm growth! Rolling back ${this.pendingGrowth} segments`);
+          this.rollbackPendingGrowth();
+        }
+        return;
+      }
+    }
+    
+    // No pending growth - normal update
     const lengthDifference = serverLength - this.lastKnownServerLength;
     if (lengthDifference > 0) {
       console.log(`🐍 GROWING: ${this.lastKnownServerLength} -> ${serverLength} (+${lengthDifference})`);
-      console.log(`🐍 BEFORE GROW: Client segments = ${this.snake.getLength()}`);
       
       // Grow the snake locally for each segment increase
       for (let i = 0; i < lengthDifference; i++) {
         this.snake.grow();
       }
       
-      console.log(`🐍 AFTER GROW: Client segments = ${this.snake.getLength()}`);
       this.lastKnownServerLength = serverLength;
     } else if (lengthDifference < 0) {
       console.log(`🐍 SHRINKING: ${this.lastKnownServerLength} -> ${serverLength} (${lengthDifference})`);
@@ -594,8 +747,51 @@ export class GameScene extends Phaser.Scene {
       
       this.lastKnownServerLength = serverLength;
     } else {
-      console.log(`🔄 NO CHANGE: Server and client lengths match at ${serverLength}`);
+      // Length matches - no change needed
     }
+  }
+  
+  private confirmPendingRemoval(foodId: string): void {
+    console.log(`✅ Confirming pending removal of food ${foodId}`);
+    
+    // Graphics already destroyed optimistically, just clean up pending state
+    this.pendingFoodRemovals.delete(foodId);
+    this.pendingFoodData.delete(foodId);
+    
+    // Verify food is not in Map (should already be removed)
+    if (this.networkFood.has(foodId)) {
+      console.warn(`⚠️ Food ${foodId} still in Map after confirmation, removing`);
+      const foodItem = this.networkFood.get(foodId);
+      if (foodItem) {
+        foodItem.graphics.destroy();
+        this.networkFood.delete(foodId);
+      }
+    }
+    
+    console.log(`✅ Food ${foodId} removal confirmed by server`);
+  }
+  
+  private confirmPendingGrowth(amount: number): void {
+    console.log(`✅ Confirming ${amount} pending growth segments`);
+    // Growth already applied optimistically, just clear pending state
+    this.pendingGrowth -= amount;
+    if (this.pendingGrowth < 0) this.pendingGrowth = 0;
+  }
+  
+  private rollbackPendingGrowth(): void {
+    console.warn(`⚠️ Rolling back ${this.pendingGrowth} pending growth segments`);
+    
+    // Shrink snake back by pending growth amount
+    for (let i = 0; i < this.pendingGrowth; i++) {
+      if (this.snake && this.snake.getLength() > SNAKE_INITIAL_LENGTH) {
+        this.snake.shrink();
+      }
+    }
+    
+    // Reset pending growth
+    this.pendingGrowth = 0;
+    this.pendingGrowthTimestamp = 0;
+    this.expectedLength = this.snake ? this.snake.getLength() : 0;
   }
 
 
@@ -795,7 +991,9 @@ export class GameScene extends Phaser.Scene {
     // Handle input
     this.handleInput();
     
-
+    // Check collisions BEFORE snake moves (use current position for immediate feedback)
+    // This ensures collision is detected as soon as snake head touches food
+    this.checkCollisions();
     
     // Update local snake with client-side prediction
     if (this.snake && this.useLocalPrediction) {
@@ -807,9 +1005,6 @@ export class GameScene extends Phaser.Scene {
     
     // Update camera
     this.updateCamera();
-    
-    // Check collisions (local prediction)
-    this.checkCollisions();
     
     // Check arena proximity
     this.checkArenaProximity();

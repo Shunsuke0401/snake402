@@ -1,11 +1,10 @@
 // Client-side networking for multiplayer snake game
-// Handles WebSocket communication, interpolation, and state synchronization
+// Migrated to Socket.IO for stable communication and auto-reconnect
 
 // Message type interfaces (matching server)
-interface BaseMessage {
-  type: string;
-  timestamp?: number;
-}
+import { io, Socket } from 'socket.io-client';
+
+interface BaseMessage { type: string; timestamp?: number }
 
 interface HelloMessage extends BaseMessage {
   type: 'hello';
@@ -19,11 +18,7 @@ interface StateMessage extends BaseMessage {
   food: NetworkFoodItem[];
 }
 
-interface InputMessage extends BaseMessage {
-  type: 'input';
-  angle: number;
-  throttle: number;
-}
+// InputMessage interface removed - only sent to server, not received
 
 interface FoodMessage extends BaseMessage {
   type: 'food';
@@ -43,10 +38,7 @@ interface DieMessage extends BaseMessage {
   reason: string;
 }
 
-interface EatAttemptMessage extends BaseMessage {
-  type: 'eat_attempt';
-  foodId: string;
-}
+// EatAttemptMessage interface removed - unused on client side (only sent, not received)
 
 interface FoodEatenMessage extends BaseMessage {
   type: 'food_eaten';
@@ -105,7 +97,7 @@ export interface NetClientEvents {
 }
 
 export class NetClient {
-  private ws: WebSocket | null = null;
+  private socket: Socket | null = null;
   private connected: boolean = false;
   private playerId: string | null = null;
   private serverUrl: string;
@@ -118,62 +110,109 @@ export class NetClient {
   
   // Interpolation state
   private remotePlayers: Map<string, InterpolatedPlayer> = new Map();
-  private interpolationDelay: number = 100; // 100ms interpolation delay
   
-  // Connection state
-  private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 5;
-  private reconnectDelay: number = 1000; // Start with 1 second
+  // Connection state (Socket.io handles reconnection automatically)
+  private reconnectAttempts: number = 0; // Tracks current reconnection attempt for logging
   
-  constructor(serverUrl: string = 'ws://localhost:8081') {
+  constructor(serverUrl: string = 'http://localhost:8080') {
     this.serverUrl = serverUrl;
   }
 
   public connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        this.ws = new WebSocket(this.serverUrl);
+    return new Promise((resolve) => {
+      this.socket = io(this.serverUrl, { 
+        transports: ['websocket'],
+        autoConnect: true,
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 45000,           // 45 seconds - wait this long for initial connection
+        // Match server's generous timeouts
+        forceNew: false,          // Reuse existing connection if available
+        multiplex: true           // Allow multiple namespaces on same connection
+      });
+
+      this.socket.on('connect', () => {
+        console.log('✅ Connected to game server', this.socket!.id);
+        this.connected = true;
+        this.reconnectAttempts = 0; // Reset on successful connection
+        resolve();
+      });
+
+      this.socket.on('reconnect', (attemptNumber: number) => {
+        console.log(`✅ Reconnected to server after ${attemptNumber} attempts`);
+        this.connected = true;
+        this.reconnectAttempts = 0;
+        // Don't clear playerId - it should be preserved during reconnection
+        // Player state will be updated by the server's hello message
+      });
+
+      this.socket.on('reconnect_attempt', (attemptNumber: number) => {
+        console.log(`🔄 Reconnection attempt ${attemptNumber}...`);
+        this.reconnectAttempts = attemptNumber;
+      });
+
+      this.socket.on('reconnect_error', (error: Error) => {
+        console.warn('⚠️ Reconnection error:', error.message);
+      });
+
+      this.socket.on('reconnect_failed', () => {
+        console.error('❌ Reconnection failed - max attempts reached');
+        this.connected = false;
+        this.playerId = null;
+        this.remotePlayers.clear();
+        this.emit('disconnected');
+        this.emit('error', 'Failed to reconnect to server');
+      });
+
+      this.socket.on('disconnect', (reason: string) => {
+        console.log(`Disconnected from game server. Reason: ${reason}`);
         
-        this.ws.onopen = () => {
-          console.log('Connected to game server');
-          this.connected = true;
-          this.reconnectAttempts = 0;
-          this.reconnectDelay = 1000;
-          resolve();
-        };
-        
-        this.ws.onmessage = (event) => {
-          this.handleMessage(event.data);
-        };
-        
-        this.ws.onclose = () => {
-          console.log('Disconnected from game server');
+        // Only clear state if not attempting to reconnect
+        // Socket.io will attempt reconnect automatically for most disconnect reasons
+        if (reason === 'io server disconnect') {
+          // Server forcibly disconnected - clear state (permanent)
+          console.log('🔴 Permanent disconnection - clearing state');
           this.connected = false;
           this.playerId = null;
           this.remotePlayers.clear();
-          
           this.emit('disconnected');
-          
-          // Attempt reconnection
-          this.attemptReconnect();
-        };
-        
-        this.ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          this.emit('error', 'Connection error');
-          reject(new Error('Failed to connect to server'));
-        };
-        
-      } catch (error) {
-        reject(error);
-      }
+        } else {
+          // Temporary disconnection - Socket.io will reconnect
+          // Don't clear playerId or remote players to preserve state
+          console.log('🟡 Temporary disconnection - waiting for reconnect...');
+          this.connected = false;
+          this.emit('disconnected');
+        }
+      });
+
+      // Typed event handlers
+      this.socket.on('hello', (msg: HelloMessage) => {
+        this.handleHello(msg);
+      });
+      this.socket.on('state', (msg: StateMessage) => {
+        this.handleState(msg);
+      });
+      this.socket.on('food', (msg: FoodMessage) => {
+        this.handleFood(msg);
+      });
+      this.socket.on('food_eaten', (msg: FoodEatenMessage) => {
+        this.handleFoodEaten(msg);
+      });
+      this.socket.on('spawn', (msg: SpawnMessage) => {
+        this.handleSpawn(msg);
+      });
+      this.socket.on('die', (msg: DieMessage) => {
+        this.handleDie(msg);
+      });
     });
   }
 
   public disconnect(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
     }
     this.connected = false;
     this.playerId = null;
@@ -181,8 +220,8 @@ export class NetClient {
   }
 
   public sendInput(angle: number, throttle: number): void {
-    if (!this.connected || !this.ws) {
-      console.log(`⚠️ Cannot send input: connected=${this.connected}, ws=${!!this.ws}`);
+    if (!this.connected || !this.socket) {
+      console.log(`⚠️ Cannot send input: connected=${this.connected}, socket=${!!this.socket}`);
       return;
     }
     
@@ -191,53 +230,33 @@ export class NetClient {
     // Send input at specified rate (20Hz for client-side prediction)
     const now = Date.now();
     if (now - this.lastInputSendTime >= 1000 / this.inputSendRate) {
-      const message: InputMessage = {
-        type: 'input',
-        angle,
-        throttle,
-        timestamp: now
-      };
-      
       console.log(`📤 Sending input: angle=${(angle * 180 / Math.PI).toFixed(1)}°, throttle=${throttle}`);
-      this.ws.send(JSON.stringify(message));
+      this.socket.emit('input', { angle, throttle });
       this.lastInputSendTime = now;
     }
   }
 
   public sendDebugMessage(message: string): void {
-    if (!this.isConnected() || !this.ws) return;
-    
-    const debugMessage = {
-      type: 'debug',
-      message
-    };
-    
-    this.ws.send(JSON.stringify(debugMessage));
+    if (!this.isConnected() || !this.socket) return;
+    this.socket.emit('debug', { message });
   }
 
   public sendEatAttempt(foodId: string): void {
-    if (!this.isConnected() || !this.ws) {
+    if (!this.isConnected() || !this.socket) {
       console.log(`❌ CLIENT: Cannot send eat attempt - not connected`);
       return;
     }
     
-    const eatMessage: EatAttemptMessage = {
-      type: 'eat_attempt',
-      foodId,
-      timestamp: Date.now()
-    };
-    
     console.log(`📤 CLIENT: Sending eat attempt for food ${foodId}`);
-    this.ws.send(JSON.stringify(eatMessage));
+    this.socket.emit('eat_attempt', { foodId });
   }
 
-  public update(deltaTime: number): void {
+  public update(_deltaTime: number): void {
     // Update interpolation for remote players
-    this.updateInterpolation(deltaTime);
+    this.updateInterpolation();
   }
 
   public getRemotePlayers(): NetworkPlayerState[] {
-    const now = Date.now();
     return Array.from(this.remotePlayers.values()).map(player => ({
       id: player.id,
       x: player.x,
@@ -256,6 +275,10 @@ export class NetClient {
 
   public isConnected(): boolean {
     return this.connected;
+  }
+  
+  public getReconnectAttempts(): number {
+    return this.reconnectAttempts;
   }
 
   public getCurrentInput(): { angle: number; throttle: number } {
@@ -277,36 +300,7 @@ export class NetClient {
     }
   }
 
-  private handleMessage(data: string): void {
-    try {
-      const message = JSON.parse(data) as BaseMessage;
-      
-      switch (message.type) {
-        case 'hello':
-          this.handleHello(message as HelloMessage);
-          break;
-        case 'state':
-          this.handleState(message as StateMessage);
-          break;
-        case 'food':
-          this.handleFood(message as FoodMessage);
-          break;
-        case 'food_eaten':
-          this.handleFoodEaten(message as FoodEatenMessage);
-          break;
-        case 'spawn':
-          this.handleSpawn(message as SpawnMessage);
-          break;
-        case 'die':
-          this.handleDie(message as DieMessage);
-          break;
-        default:
-          console.warn('Unknown message type:', message.type);
-      }
-    } catch (error) {
-      console.error('Error parsing server message:', error);
-    }
-  }
+  // Raw message handler no longer needed (Socket.IO uses typed events)
 
   private handleHello(message: HelloMessage): void {
     this.playerId = message.playerId;
@@ -316,7 +310,6 @@ export class NetClient {
 
   private handleState(message: StateMessage): void {
     // Update remote players (excluding self)
-    const now = Date.now();
     
     for (const playerState of message.players) {
       if (playerState.id === this.playerId) continue; // Skip own player
@@ -332,7 +325,7 @@ export class NetClient {
         existingPlayer.segments = playerState.segments;
         existingPlayer.isBoosting = playerState.isBoosting;
         existingPlayer.score = playerState.score;
-        existingPlayer.lastUpdateTime = now;
+        existingPlayer.lastUpdateTime = Date.now();
       } else {
         // New remote player
         const interpolatedPlayer: InterpolatedPlayer = {
@@ -347,7 +340,7 @@ export class NetClient {
           segments: playerState.segments,
           isBoosting: playerState.isBoosting,
           score: playerState.score,
-          lastUpdateTime: now
+          lastUpdateTime: Date.now()
         };
         this.remotePlayers.set(playerState.id, interpolatedPlayer);
       }
@@ -384,7 +377,7 @@ export class NetClient {
     this.emit('playerDied', message.playerId, message.reason);
   }
 
-  private updateInterpolation(deltaTime: number): void {
+  private updateInterpolation(): void {
     const interpolationSpeed = 0.1; // Smooth interpolation factor
     
     for (const player of this.remotePlayers.values()) {
@@ -411,21 +404,6 @@ export class NetClient {
     return diff;
   }
 
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('Max reconnection attempts reached');
-      this.emit('error', 'Failed to reconnect to server');
-      return;
-    }
-    
-    this.reconnectAttempts++;
-    console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-    
-    setTimeout(() => {
-      this.connect().catch(() => {
-        // Exponential backoff
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10000);
-      });
-    }, this.reconnectDelay);
-  }
+  // attemptReconnect() removed - Socket.io handles reconnection automatically
+  // No need for manual reconnection logic as Socket.io provides built-in auto-reconnect
 }
