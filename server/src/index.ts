@@ -8,8 +8,8 @@ const TICK_RATE = 30; // 30Hz server tick rate
 const TICK_INTERVAL = 1000 / TICK_RATE;
 
 // Game constants (shared with client)
-const WORLD_WIDTH = 18000;
-const WORLD_HEIGHT = 18000;
+const WORLD_WIDTH = 9000; // Reduced from 18000 (half size)
+const WORLD_HEIGHT = 9000; // Reduced from 18000 (half size)
 const GRID_SIZE = 20;
 const ARENA_CENTER_X = WORLD_WIDTH / 2;
 const ARENA_CENTER_Y = WORLD_HEIGHT / 2;
@@ -17,13 +17,13 @@ const ARENA_RADIUS = Math.min(WORLD_WIDTH, WORLD_HEIGHT) / 2 - 500;
 const BASE_SPEED = 200; // pixels per second
 const BOOST_MULTIPLIER = 1.5;
 const SNAKE_INITIAL_LENGTH = 3;
-const MAX_FOOD = 500; // Reduced from 2500 for better performance and instant collision detection
+const MAX_FOOD = 500; // Optimized count for performance and good food density
 
 // Message types
 interface BaseMessage { type: string; timestamp?: number }
 interface HelloMessage extends BaseMessage { type: 'hello'; playerId: string; spawnPosition: { x: number; y: number } }
 interface StateMessage extends BaseMessage { type: 'state'; players: PlayerState[]; food: FoodItem[] }
-interface FoodMessage extends BaseMessage { type: 'food'; action: 'spawn' | 'despawn'; food: FoodItem }
+// FoodMessage removed - replaced by food_state and food_update events
 interface SpawnMessage extends BaseMessage { type: 'spawn'; playerId: string; position: { x: number; y: number } }
 interface DieMessage extends BaseMessage { type: 'die'; playerId: string; reason: string }
 interface FoodEatenMessage extends BaseMessage { type: 'food_eaten'; foodId: string; by: string }
@@ -187,44 +187,39 @@ class GameWorld {
   }
 
   private checkCollisions(): void {
-    // Server-authoritative collision detection runs every tick
-    // Optimized: Use spatial culling to reduce checks
+    // Server-authoritative collision detection with SPATIAL PARTITIONING
+    // Only checks food in nearby grid cells - O(nearby) instead of O(all)
     
     for (const player of this.players.values()) {
       if (!player.segments || player.segments.length === 0) continue;
       
       const head = player.segments[0];
-      const allFood = this.foodManager.getAllFood();
       
-      // Collision constants
-      const FOOD_RADIUS = 15;
-      const SNAKE_EAT_RADIUS = 25;
-      const collisionDistance = FOOD_RADIUS + SNAKE_EAT_RADIUS;
+      // Collision constants - INCREASED for more forgiving detection
+      const FOOD_RADIUS = 20;  // Increased from 15
+      const SNAKE_EAT_RADIUS = 50;  // Increased from 25 for much more forgiving collision
+      const collisionDistance = FOOD_RADIUS + SNAKE_EAT_RADIUS;  // Now 70px instead of 40px
       const collisionDistanceSquared = collisionDistance * collisionDistance;
-      const cullDistance = 200; // Reduced from 500px - only check very nearby food
-      const cullDistanceSquared = cullDistance * cullDistance;
+      const searchRadius = 300; // Increased from 200px to find more food candidates
       
-      let foodChecked = 0;
-      let foodCulled = 0;
+      // SPATIAL PARTITIONING: Only get food near the player's head
+      // This is MUCH faster than checking all food!
+      const nearbyFood = this.foodManager.getFoodNearPosition(head.x, head.y, searchRadius);
       
-      // OPTIMIZATION: Find closest food first, then check collision
-      // This prevents checking distant food unnecessarily
-      let closestFood: typeof allFood[0] | null = null;
+      // Debug: Log how many food items we're checking
+      if (nearbyFood.length > 0 && Math.random() < 0.01) {
+        console.log(`🔍 Checking ${nearbyFood.length} food items near player ${player.id}`);
+      }
+      
+      // Find closest food among nearby candidates
+      let closestFood: typeof nearbyFood[0] | null = null;
       let closestDistanceSquared = Infinity;
       
-      for (const food of allFood) {
+      for (const food of nearbyFood) {
         // Ultra-fast distance check (squared distance, no sqrt)
         const dx = head.x - food.x;
         const dy = head.y - food.y;
         const distanceSquared = dx * dx + dy * dy;
-        
-        // Aggressive culling: skip food beyond 200px
-        if (distanceSquared > cullDistanceSquared) {
-          foodCulled++;
-          continue;
-        }
-        
-        foodChecked++;
         
         // Track closest food
         if (distanceSquared < closestDistanceSquared) {
@@ -233,12 +228,18 @@ class GameWorld {
         }
       }
       
+      // Debug: Log near misses to understand why collisions are missed
+      if (closestFood && closestDistanceSquared > collisionDistanceSquared && closestDistanceSquared < collisionDistanceSquared * 4) {
+        const distance = Math.sqrt(closestDistanceSquared);
+        console.log(`🟡 NEAR MISS: Player ${player.id} passed food at ${distance.toFixed(1)}px (collision radius: ${collisionDistance}px)`);
+      }
+      
       // Only process collision with the closest food if it's within range
       if (closestFood && closestDistanceSquared <= collisionDistanceSquared) {
         const distance = Math.sqrt(closestDistanceSquared);
         const food = closestFood;
 
-        console.log(`🍎 SERVER: Collision! Player ${player.id} ate food ${food.id} at ${distance.toFixed(1)}px`);
+        console.log(`🍎 COLLISION! Player ${player.id} ate ${food.type} food at ${distance.toFixed(1)}px (radius: ${collisionDistance}px, checked ${nearbyFood.length} nearby)`);
         
         // Update player state
         player.length += food.growthAmount;
@@ -258,29 +259,18 @@ class GameWorld {
           };
           this.io.emit('food_eaten', foodEatenMessage);
           
-          // Broadcast food despawn
-          const despawnMsg: FoodMessage = {
-            type: 'food',
-            action: 'despawn',
-            food,
+          // Broadcast food update (combined despawn + spawn)
+          const foodUpdateMsg = {
+            type: 'food_update',
+            despawn: food.id,
+            spawn: newFood,
             timestamp: Date.now()
           };
-          this.io.emit('food', despawnMsg);
-          
-          // Broadcast new food spawn
-          const spawnMsg: FoodMessage = {
-            type: 'food',
-            action: 'spawn',
-            food: newFood,
-            timestamp: Date.now()
-          };
-          this.io.emit('food', spawnMsg);
+          console.log(`📡 Food update: despawn ${food.id}, spawn ${newFood.id}`);
+          this.io.emit('food_update', foodUpdateMsg);
+        } else {
+          console.error(`❌ io not available - cannot broadcast food events!`);
         }
-      }
-      
-      // Log collision check stats occasionally for monitoring
-      if (Math.random() < 0.005) { // 0.5% of ticks
-        console.log(`🔍 Player ${player.id}: checked ${foodChecked}/${allFood.length} food (${((foodChecked/allFood.length)*100).toFixed(1)}% checked)`);
       }
     }
   }
@@ -356,7 +346,10 @@ io.on('connection', (socket) => {
 
   const helloMessage: HelloMessage = { type: 'hello', playerId, spawnPosition: { x: player.x, y: player.y }, timestamp: Date.now() };
   socket.emit('hello', helloMessage);
-  socket.emit('state', gameWorld.getState());
+  
+  const initialState = gameWorld.getState();
+  console.log(`📤 Sending initial state to ${playerId}: ${initialState.players.length} players, ${initialState.food.length} food items`);
+  socket.emit('state', initialState);
 
   const spawnMessage: SpawnMessage = { type: 'spawn', playerId, position: { x: player.x, y: player.y }, timestamp: Date.now() };
   socket.broadcast.emit('spawn', spawnMessage);
@@ -382,6 +375,8 @@ io.on('connection', (socket) => {
 let lastTickTime = Date.now();
 let slowTickCount = 0;
 let tickCounter = 0;
+let foodSyncCounter = 0;
+const FOOD_SYNC_INTERVAL = 15; // Full food sync every 15 ticks (~500ms at 30Hz)
 
 setInterval(() => {
   const tickStart = Date.now();
@@ -394,6 +389,22 @@ setInterval(() => {
   // Broadcast state to all players
   const stateMessage = gameWorld.getState();
   io.emit('state', stateMessage);
+  
+  // Full food sync every 500ms to ensure client stays in sync
+  foodSyncCounter++;
+  if (foodSyncCounter >= FOOD_SYNC_INTERVAL) {
+    const foodList = stateMessage.food;
+    const actualFoodCount = gameWorld.getFoodManager().getFoodCount();
+    
+    // DEBUG: Warn if food count doesn't match
+    if (foodList.length !== actualFoodCount) {
+      console.error(`⚠️ FOOD COUNT MISMATCH! State has ${foodList.length}, FoodManager has ${actualFoodCount}`);
+    }
+    
+    console.log(`🔄 Full food sync: broadcasting ${foodList.length} food items (expected: ${MAX_FOOD}) to ${io.engine.clientsCount} clients`);
+    io.emit('food_state', { foods: foodList, timestamp: Date.now() });
+    foodSyncCounter = 0;
+  }
   
   // Monitor tick performance
   const tickDuration = Date.now() - tickStart;
@@ -409,6 +420,7 @@ setInterval(() => {
   if (tickCounter % 300 === 0) {
     const slowPercentage = ((slowTickCount / 300) * 100).toFixed(1);
     console.log(`📊 Performance: ${slowPercentage}% slow ticks in last 10s (${slowTickCount}/300)`);
+    console.log(`   Active food: ${stateMessage.food.length}, Active players: ${stateMessage.players.length}`);
     slowTickCount = 0;
   }
 }, TICK_INTERVAL);

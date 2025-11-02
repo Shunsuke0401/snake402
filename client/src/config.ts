@@ -1,8 +1,8 @@
 // Game Configuration Constants
 
 // World dimensions
-export const WORLD_WIDTH = 18000;
-export const WORLD_HEIGHT = 18000;
+export const WORLD_WIDTH = 9000; // Reduced from 18000 (half size)
+export const WORLD_HEIGHT = 9000; // Reduced from 18000 (half size)
 
 // Grid settings
 export const GRID_SIZE = 20;

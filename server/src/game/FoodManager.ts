@@ -33,6 +33,10 @@ export class FoodManager {
   private arenaRadius: number;
   private gridSize: number;
   
+  // Spatial partitioning grid for fast collision detection
+  private spatialGrid: Map<string, Set<string>> = new Map(); // "x,y" -> Set of food IDs
+  private readonly SPATIAL_CELL_SIZE = 500; // 500px cells for spatial partitioning
+  
   // Collision constants
   private readonly FOOD_RADIUS = 15;
   private readonly SNAKE_EAT_RADIUS = 25;
@@ -83,7 +87,61 @@ export class FoodManager {
     };
 
     this.food.set(id, food);
+    this.addToSpatialGrid(food);
     return food;
+  }
+  
+  private addToSpatialGrid(food: FoodItem): void {
+    const cellKey = this.getSpatialCellKey(food.x, food.y);
+    if (!this.spatialGrid.has(cellKey)) {
+      this.spatialGrid.set(cellKey, new Set());
+    }
+    this.spatialGrid.get(cellKey)!.add(food.id);
+  }
+  
+  private removeFromSpatialGrid(food: FoodItem): void {
+    const cellKey = this.getSpatialCellKey(food.x, food.y);
+    const cell = this.spatialGrid.get(cellKey);
+    if (cell) {
+      cell.delete(food.id);
+      if (cell.size === 0) {
+        this.spatialGrid.delete(cellKey);
+      }
+    }
+  }
+  
+  private getSpatialCellKey(x: number, y: number): string {
+    const cellX = Math.floor(x / this.SPATIAL_CELL_SIZE);
+    const cellY = Math.floor(y / this.SPATIAL_CELL_SIZE);
+    return `${cellX},${cellY}`;
+  }
+  
+  public getFoodNearPosition(x: number, y: number, radius: number): FoodItem[] {
+    const nearbyFood: FoodItem[] = [];
+    
+    // Calculate which cells to check (current cell + surrounding cells)
+    const cellRadius = Math.ceil(radius / this.SPATIAL_CELL_SIZE);
+    const centerCellX = Math.floor(x / this.SPATIAL_CELL_SIZE);
+    const centerCellY = Math.floor(y / this.SPATIAL_CELL_SIZE);
+    
+    // Check all cells within the radius
+    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+      for (let dy = -cellRadius; dy <= cellRadius; dy++) {
+        const cellKey = `${centerCellX + dx},${centerCellY + dy}`;
+        const cell = this.spatialGrid.get(cellKey);
+        
+        if (cell) {
+          for (const foodId of cell) {
+            const food = this.food.get(foodId);
+            if (food) {
+              nearbyFood.push(food);
+            }
+          }
+        }
+      }
+    }
+    
+    return nearbyFood;
   }
 
   public validateEatAttempt(player: Player, foodId: string): FoodEatenResult {
@@ -128,7 +186,12 @@ export class FoodManager {
   }
 
   public removeFood(foodId: string): boolean {
-    return this.food.delete(foodId);
+    const food = this.food.get(foodId);
+    if (food) {
+      this.removeFromSpatialGrid(food);
+      return this.food.delete(foodId);
+    }
+    return false;
   }
 
   public getAllFood(): FoodItem[] {
@@ -145,6 +208,11 @@ export class FoodManager {
     // Ensure we always have maxFood items
     while (this.food.size < this.maxFood) {
       newFood.push(this.spawnFood());
+    }
+    
+    // DEBUG: Log if we ever have MORE than maxFood (shouldn't happen)
+    if (this.food.size > this.maxFood) {
+      console.error(`⚠️ FOOD COUNT OVERFLOW! Have ${this.food.size} food, max is ${this.maxFood}`);
     }
     
     return newFood;

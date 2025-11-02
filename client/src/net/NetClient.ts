@@ -93,6 +93,8 @@ export interface NetClientEvents {
   foodUpdate: (action: 'spawn' | 'despawn', food: NetworkFoodItem) => void;
   foodEaten: (foodId: string, by: string) => void;
   stateUpdate: (players: NetworkPlayerState[], food: NetworkFoodItem[]) => void;
+  foodState: (foods: NetworkFoodItem[]) => void;
+  foodUpdateCombined: (despawnId: string, spawnFood: NetworkFoodItem) => void;
   error: (error: string) => void;
 }
 
@@ -200,6 +202,19 @@ export class NetClient {
       this.socket.on('food_eaten', (msg: FoodEatenMessage) => {
         this.handleFoodEaten(msg);
       });
+      
+      // Full food state sync (every 500ms) - ensures client stays in sync
+      this.socket.on('food_state', (data: { foods: NetworkFoodItem[]; timestamp: number }) => {
+        console.log(`🔄 Received full food sync: ${data.foods.length} items`);
+        this.emit('foodState', data.foods);
+      });
+      
+      // Combined food update (despawn + spawn in one message)
+      this.socket.on('food_update', (data: { despawn: string; spawn: NetworkFoodItem; timestamp: number }) => {
+        console.log(`🔄 Received food update: despawn ${data.despawn}, spawn ${data.spawn.id}`);
+        this.emit('foodUpdateCombined', data.despawn, data.spawn);
+      });
+      
       this.socket.on('spawn', (msg: SpawnMessage) => {
         this.handleSpawn(msg);
       });

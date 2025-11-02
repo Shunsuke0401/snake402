@@ -30,7 +30,7 @@ interface RemotePlayerVisual {
 
 export class GameScene extends Phaser.Scene {
   private snake!: Snake;
-  private foodManager!: FoodManager;
+  private foodManager?: FoodManager; // Optional - not used in networked gameplay
   private uiScene!: UIScene;
   private netClient!: NetClient;
   
@@ -243,6 +243,46 @@ export class GameScene extends Phaser.Scene {
         this.removeNetworkFood(food.id);
       }
     });
+    
+    // Full food state sync (every 500ms from server)
+    this.netClient.on('foodState', (foods: NetworkFoodItem[]) => {
+      console.log(`🔄 Full food sync received: ${foods.length} items (current client: ${this.networkFood.size})`);
+      
+      // DEBUG: Check for food count mismatch
+      if (this.networkFood.size > foods.length) {
+        console.error(`⚠️ CLIENT HAS MORE FOOD THAN SERVER! Client: ${this.networkFood.size}, Server: ${foods.length}`);
+        const clientIds = new Set(Array.from(this.networkFood.keys()));
+        const serverIds = new Set(foods.map(f => f.id));
+        const phantomIds = Array.from(clientIds).filter(id => !serverIds.has(id));
+        console.error(`   Phantom food IDs (${phantomIds.length}):`, phantomIds.slice(0, 10));
+      }
+      
+      // Clear all existing food and rebuild from server state
+      this.clearNetworkFood();
+      
+      // Add all food from server
+      for (const food of foods) {
+        this.addNetworkFood(food);
+      }
+      
+      console.log(`🔄 Food sync complete: ${this.networkFood.size} food items rendered (expected: ${foods.length})`);
+      
+      // Final validation
+      if (this.networkFood.size !== foods.length) {
+        console.error(`❌ SYNC FAILED! Rendered ${this.networkFood.size} but received ${foods.length}`);
+      }
+    });
+    
+    // Combined food update (despawn + spawn in one message)
+    this.netClient.on('foodUpdateCombined', (despawnId: string, spawnFood: NetworkFoodItem) => {
+      console.log(`🔄 Combined food update: despawn ${despawnId}, spawn ${spawnFood.id}`);
+      
+      // Remove old food
+      this.removeNetworkFood(despawnId);
+      
+      // Add new food
+      this.addNetworkFood(spawnFood);
+    });
 
     this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
       this.updateRemotePlayers(players);
@@ -277,9 +317,25 @@ export class GameScene extends Phaser.Scene {
         this.hasReceivedInitialFood = true;
         console.log(`🍎 Initial food loaded. Will now rely on individual foodUpdate events only.`);
       } else {
-        // After initial load, stateUpdate should NOT update food to prevent race conditions
-        // Individual foodUpdate events handle all food spawn/despawn
-        // We can use stateUpdate food list for validation/debugging, but don't sync it
+        // VALIDATION: Periodically check for phantom food (food that exists on client but not on server)
+        // This helps debug desynchronization issues
+        if (Math.random() < 0.01) { // 1% of state updates
+          const serverFoodIds = new Set(food.map(f => f.id));
+          const clientFoodIds = Array.from(this.networkFood.keys());
+          const phantomFood = clientFoodIds.filter(id => !serverFoodIds.has(id));
+          
+          if (phantomFood.length > 0) {
+            console.error(`❌ PHANTOM FOOD DETECTED! ${phantomFood.length} food items exist on client but not on server:`);
+            console.error(`   Client has ${this.networkFood.size} food, Server has ${food.length} food`);
+            console.error(`   Phantom food IDs:`, phantomFood.slice(0, 5));
+            
+            // Auto-fix: Remove phantom food
+            for (const foodId of phantomFood) {
+              console.log(`🔧 Removing phantom food: ${foodId}`);
+              this.removeNetworkFood(foodId);
+            }
+          }
+        }
       }
     });
     
@@ -296,8 +352,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupGame(): void {
-    // Initialize food manager (disabled for networked gameplay)
-    this.foodManager = new FoodManager(this);
+    // ❌ DO NOT create local FoodManager for networked gameplay!
+    // All food comes from server via this.networkFood Map
+    // Local FoodManager would spawn 2500 extra food items on top of server's 500
+    // this.foodManager = new FoodManager(this);
     
     // Reset game state
     this.score = 0;
@@ -962,7 +1020,12 @@ export class GameScene extends Phaser.Scene {
     if (this.snake) {
       this.snake.destroy();
     }
-    this.foodManager.destroy();
+    
+    // Only destroy foodManager if it exists (it won't in networked gameplay)
+    if (this.foodManager) {
+      this.foodManager.destroy();
+    }
+    
     this.clearRemotePlayers();
     this.clearNetworkFood();
     
