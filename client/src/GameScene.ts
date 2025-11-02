@@ -244,32 +244,46 @@ export class GameScene extends Phaser.Scene {
       }
     });
     
-    // Full food state sync (every 500ms from server)
+    // Full food state sync (every 2 seconds from server)
+    // Uses DIFF UPDATE instead of clear+rebuild to avoid flickering
     this.netClient.on('foodState', (foods: NetworkFoodItem[]) => {
-      console.log(`🔄 Full food sync received: ${foods.length} items (current client: ${this.networkFood.size})`);
-      
-      // DEBUG: Check for food count mismatch
-      if (this.networkFood.size > foods.length) {
-        console.error(`⚠️ CLIENT HAS MORE FOOD THAN SERVER! Client: ${this.networkFood.size}, Server: ${foods.length}`);
-        const clientIds = new Set(Array.from(this.networkFood.keys()));
-        const serverIds = new Set(foods.map(f => f.id));
-        const phantomIds = Array.from(clientIds).filter(id => !serverIds.has(id));
-        console.error(`   Phantom food IDs (${phantomIds.length}):`, phantomIds.slice(0, 10));
+      // First time: load all food
+      if (!this.hasReceivedInitialFood) {
+        console.log(`🍎 Loading initial food from food_state: ${foods.length} items`);
+        for (const food of foods) {
+          this.addNetworkFood(food);
+        }
+        this.hasReceivedInitialFood = true;
+        console.log(`🍎 Initial food loaded: ${this.networkFood.size} items`);
+        return;
       }
       
-      // Clear all existing food and rebuild from server state
-      this.clearNetworkFood();
+      // Subsequent syncs: DIFF UPDATE (no flicker!)
+      // Only add missing food and remove phantom food
+      const serverFoodIds = new Set(foods.map(f => f.id));
+      const clientFoodIds = new Set(this.networkFood.keys());
       
-      // Add all food from server
+      // Remove phantom food (exists on client but not server)
+      let removedCount = 0;
+      for (const clientId of clientFoodIds) {
+        if (!serverFoodIds.has(clientId)) {
+          this.removeNetworkFood(clientId);
+          removedCount++;
+        }
+      }
+      
+      // Add missing food (exists on server but not client)
+      let addedCount = 0;
       for (const food of foods) {
-        this.addNetworkFood(food);
+        if (!clientFoodIds.has(food.id)) {
+          this.addNetworkFood(food);
+          addedCount++;
+        }
       }
       
-      console.log(`🔄 Food sync complete: ${this.networkFood.size} food items rendered (expected: ${foods.length})`);
-      
-      // Final validation
-      if (this.networkFood.size !== foods.length) {
-        console.error(`❌ SYNC FAILED! Rendered ${this.networkFood.size} but received ${foods.length}`);
+      // Log only if there were changes
+      if (addedCount > 0 || removedCount > 0) {
+        console.log(`🔄 Food sync: added ${addedCount}, removed ${removedCount} (total: ${this.networkFood.size})`);
       }
     });
     
@@ -309,34 +323,15 @@ export class GameScene extends Phaser.Scene {
         }
       }
       
-      // Load initial food from first state update, then rely on individual food updates
-      // IMPORTANT: After initial load, we only use individual foodUpdate events to avoid race conditions
-      if (!this.hasReceivedInitialFood) {
-        console.log(`🍎 Loading initial food: ${food.length} items`);
-        this.updateNetworkFood(food);
-        this.hasReceivedInitialFood = true;
-        console.log(`🍎 Initial food loaded. Will now rely on individual foodUpdate events only.`);
-      } else {
-        // VALIDATION: Periodically check for phantom food (food that exists on client but not on server)
-        // This helps debug desynchronization issues
-        if (Math.random() < 0.01) { // 1% of state updates
-          const serverFoodIds = new Set(food.map(f => f.id));
-          const clientFoodIds = Array.from(this.networkFood.keys());
-          const phantomFood = clientFoodIds.filter(id => !serverFoodIds.has(id));
-          
-          if (phantomFood.length > 0) {
-            console.error(`❌ PHANTOM FOOD DETECTED! ${phantomFood.length} food items exist on client but not on server:`);
-            console.error(`   Client has ${this.networkFood.size} food, Server has ${food.length} food`);
-            console.error(`   Phantom food IDs:`, phantomFood.slice(0, 5));
-            
-            // Auto-fix: Remove phantom food
-            for (const foodId of phantomFood) {
-              console.log(`🔧 Removing phantom food: ${foodId}`);
-              this.removeNetworkFood(foodId);
-            }
-          }
-        }
-      }
+      // ⚠️ State updates NO LONGER contain food (bandwidth optimization)
+      // Initial food now comes from the first 'food_state' event (every 2 seconds)
+      // Individual food changes come from 'food_update' events (immediate)
+      
+      // Skip food processing from stateUpdate - it's now always empty!
+      // Food is managed by:
+      // 1. Initial load: first 'food_state' event
+      // 2. Updates: 'food_update' events (immediate)
+      // 3. Sync: 'food_state' events every 2 seconds (diff update)
     });
     
     this.netClient.on('error', (error: string) => {
