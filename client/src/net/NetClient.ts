@@ -93,6 +93,12 @@ export interface NetClientEvents {
   foodUpdate: (action: 'spawn' | 'despawn', food: NetworkFoodItem) => void;
   foodEaten: (foodId: string, by: string) => void;
   stateUpdate: (players: NetworkPlayerState[], food: NetworkFoodItem[]) => void;
+  stateBatch: (data: {
+    tick: number;
+    player: NetworkPlayerState;
+    foods: Array<{ id: string; x: number; y: number; color: number; size: number; type: string }>;
+    others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number }>;
+  }) => void;
   foodState: (foods: NetworkFoodItem[]) => void;
   foodUpdateCombined: (despawnId: string, spawnFood: NetworkFoodItem) => void;
   error: (error: string) => void;
@@ -195,6 +201,16 @@ export class NetClient {
       });
       this.socket.on('state', (msg: StateMessage) => {
         this.handleState(msg);
+      });
+      
+      // Batched state update with visibility culling (new optimized format)
+      this.socket.on('state_batch', (data: {
+        tick: number;
+        player: NetworkPlayerState;
+        foods: Array<{ id: string; x: number; y: number; color: number; size: number; type: string }>;
+        others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number }>;
+      }) => {
+        this.emit('stateBatch', data);
       });
       this.socket.on('food', (msg: FoodMessage) => {
         this.handleFood(msg);

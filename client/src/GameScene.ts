@@ -298,6 +298,57 @@ export class GameScene extends Phaser.Scene {
       this.addNetworkFood(spawnFood);
     });
 
+    // NEW: Batched state update with visibility culling (optimized for many players)
+    this.netClient.on('stateBatch', (data: {
+      tick: number;
+      player: NetworkPlayerState;
+      foods: Array<{ id: string; x: number; y: number; color: number; size: number; type: string }>;
+      others: Array<{ id: string; x: number; y: number; angle: number; length: number; score: number }>;
+    }) => {
+      // Update local player
+      if (this.playerId && this.snake && data.player.id === this.playerId) {
+        this.uiScene.updateScore(data.player.score);
+        const clientLength = this.snake.getLength();
+        this.uiScene.updateLength(`${data.player.length} (client: ${clientLength})`);
+        
+        if (data.player.segments.length > 0) {
+          this.serverPosition = { x: data.player.x, y: data.player.y };
+          this.lastServerUpdate = Date.now();
+          this.handleServerLengthChange(data.player.length);
+        }
+      }
+      
+      // Update visible remote players
+      const remotePlayers: NetworkPlayerState[] = data.others.map(p => ({
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        angle: p.angle,
+        length: p.length,
+        segments: [], // Simplified - no segments for remote players
+        isBoosting: false,
+        score: p.score
+      }));
+      this.updateRemotePlayers(remotePlayers);
+      
+      // Sync visible food (only nearby food is sent)
+      for (const foodData of data.foods) {
+        const food: NetworkFoodItem = {
+          id: foodData.id,
+          x: foodData.x,
+          y: foodData.y,
+          color: foodData.color,
+          size: foodData.size,
+          type: foodData.type as 'small' | 'large'
+        };
+        
+        if (!this.networkFood.has(food.id)) {
+          this.addNetworkFood(food);
+        }
+      }
+    });
+
+    // Legacy stateUpdate handler (keep for backward compatibility during transition)
     this.netClient.on('stateUpdate', (players: NetworkPlayerState[], food: NetworkFoodItem[]) => {
       this.updateRemotePlayers(players);
       
@@ -306,32 +357,19 @@ export class GameScene extends Phaser.Scene {
         const localPlayer = players.find(p => p.id === this.playerId);
         if (localPlayer) {
           this.uiScene.updateScore(localPlayer.score);
-          // Show both server length and actual client length for debugging
           const clientLength = this.snake.getLength();
           this.uiScene.updateLength(`${localPlayer.length} (client: ${clientLength})`);
           
-          // Store server position for reference
           if (localPlayer.segments.length > 0) {
             this.serverPosition = { x: localPlayer.x, y: localPlayer.y };
             this.lastServerUpdate = Date.now();
-            
-            // Handle snake growth based on server length changes
             this.handleServerLengthChange(localPlayer.length);
-            
-            // Trust local prediction completely - no position corrections
           }
         }
       }
       
-      // ⚠️ State updates NO LONGER contain food (bandwidth optimization)
-      // Initial food now comes from the first 'food_state' event (every 2 seconds)
-      // Individual food changes come from 'food_update' events (immediate)
-      
-      // Skip food processing from stateUpdate - it's now always empty!
-      // Food is managed by:
-      // 1. Initial load: first 'food_state' event
-      // 2. Updates: 'food_update' events (immediate)
-      // 3. Sync: 'food_state' events every 2 seconds (diff update)
+      // State updates no longer contain food (bandwidth optimization)
+      // Food is managed by stateBatch and food_state events
     });
     
     this.netClient.on('error', (error: string) => {
