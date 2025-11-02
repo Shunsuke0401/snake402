@@ -149,19 +149,22 @@ class GameWorld {
     const x = ARENA_CENTER_X + Math.cos(angle) * radius;
     const y = ARENA_CENTER_Y + Math.sin(angle) * radius;
 
+    // Initialize with random direction
+    const initialAngle = Math.random() * 2 * Math.PI;
+
     const player: Player = {
       id: playerId,
       ws,
       x,
       y,
-      angle: Math.random() * 2 * Math.PI,
-      targetAngle: 0,
+      angle: initialAngle,
+      targetAngle: initialAngle, // Initialize targetAngle to match angle so player moves immediately
       speed: BASE_SPEED,
       isBoosting: false,
       segments: [],
       length: SNAKE_INITIAL_LENGTH,
       score: 0,
-      lastInput: { angle: 0, throttle: 0 },
+      lastInput: { angle: initialAngle, throttle: 0 },
       lastInputTime: Date.now()
     };
 
@@ -173,6 +176,7 @@ class GameWorld {
       });
     }
 
+    console.log(`👤 Player ${playerId} spawned at (${x.toFixed(1)}, ${y.toFixed(1)}) with angle ${(initialAngle * 180 / Math.PI).toFixed(1)}°`);
     this.players.set(playerId, player);
     return player;
   }
@@ -184,10 +188,20 @@ class GameWorld {
   public updatePlayerInput(playerId: string, input: { angle: number; throttle: number }): void {
     const player = this.players.get(playerId);
     if (player) {
+      const oldAngle = player.targetAngle;
+      const oldBoosting = player.isBoosting;
+      
       player.lastInput = input;
       player.lastInputTime = Date.now();
       player.targetAngle = input.angle;
       player.isBoosting = input.throttle > 0;
+      
+      // Debug log occasionally to verify input is being processed
+      if (Date.now() % 2000 < TICK_INTERVAL * 2) {
+        console.log(`🎮 Input update for ${playerId}: angle=${(input.angle * 180 / Math.PI).toFixed(1)}° (was ${(oldAngle * 180 / Math.PI).toFixed(1)}°), throttle=${input.throttle}, boosting=${player.isBoosting}`);
+      }
+    } else {
+      console.warn(`⚠️ updatePlayerInput called for unknown player: ${playerId}`);
     }
   }
 
@@ -218,6 +232,8 @@ class GameWorld {
 
     // Move player
     const moveDistance = (player.speed * deltaTime) / 1000;
+    const oldX = player.x;
+    const oldY = player.y;
     const newX = player.x + Math.cos(player.angle) * moveDistance;
     const newY = player.y + Math.sin(player.angle) * moveDistance;
 
@@ -232,6 +248,17 @@ class GameWorld {
 
       // Update segments
       this.updatePlayerSegments(player);
+      
+      // Debug: Log if player isn't moving (potential issue)
+      const actualMove = Math.sqrt(Math.pow(player.x - oldX, 2) + Math.pow(player.y - oldY, 2));
+      if (actualMove < 0.1 && Date.now() % 2000 < TICK_INTERVAL * 2) {
+        console.warn(`⚠️ Player ${player.id} not moving: pos=(${player.x.toFixed(1)}, ${player.y.toFixed(1)}), angle=${(player.angle * 180 / Math.PI).toFixed(1)}°, speed=${player.speed.toFixed(1)}, distance=${actualMove.toFixed(3)}`);
+      }
+    } else {
+      // Player hit boundary - log occasionally
+      if (Date.now() % 2000 < TICK_INTERVAL * 2) {
+        console.log(`🚧 Player ${player.id} hit boundary at (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
+      }
     }
   }
 
@@ -260,43 +287,54 @@ class GameWorld {
   }
 
   private checkCollisions(): void {
-    // Debug: Log collision check for first player every 2 seconds
-    if (this.players.size > 0 && Date.now() % 2000 < TICK_INTERVAL * 2) {
-      const firstPlayer = Array.from(this.players.values())[0];
-      console.log(`🔍 COLLISION CHECK: Player ${firstPlayer.id} at (${firstPlayer.x.toFixed(1)}, ${firstPlayer.y.toFixed(1)}), length=${firstPlayer.length}, segments=${firstPlayer.segments.length}`);
-      console.log(`🔍 FOOD COUNT: ${this.food.size} food items available`);
-      
-      if (this.food.size > 0) {
-        let nearestFood = null;
-        let nearestDistance = Infinity;
-        for (const food of this.food.values()) {
-          const distance = Math.sqrt(
-            Math.pow(firstPlayer.x - food.x, 2) + Math.pow(firstPlayer.y - food.y, 2)
-          );
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestFood = food;
-          }
-        }
-        if (nearestFood) {
-          console.log(`🔍 NEAREST FOOD: at (${nearestFood.x}, ${nearestFood.y}), distance: ${nearestDistance.toFixed(1)}, collision radius: ${(nearestFood.size / 2 + GRID_SIZE * 2).toFixed(1)}`);
-        }
-      }
-    }
-    
     for (const player of this.players.values()) {
+      // Debug: Log detailed collision check for each player every 2 seconds
+      const debugLog = Date.now() % 2000 < TICK_INTERVAL * 2;
+      
+      if (debugLog) {
+        console.log(`🔍 COLLISION CHECK: Player ${player.id} at (${player.x.toFixed(1)}, ${player.y.toFixed(1)}), angle=${(player.angle * 180 / Math.PI).toFixed(1)}°, speed=${player.speed.toFixed(1)}`);
+        console.log(`🔍 FOOD COUNT: ${this.food.size} food items available`);
+        console.log(`🔍 PLAYER STATE: length=${player.length}, segments=${player.segments.length}, boosting=${player.isBoosting}`);
+      }
+      
       // Check food collisions
+      let foodChecked = 0;
+      let nearestFoodDistance = Infinity;
+      let nearestFoodId: string | null = null;
+      
       for (const [foodId, food] of this.food.entries()) {
+        foodChecked++;
+        
         const distance = Math.sqrt(
           Math.pow(player.x - food.x, 2) + Math.pow(player.y - food.y, 2)
         );
 
-        const collisionRadius = food.size / 2 + GRID_SIZE * 2; // More generous collision detection
+        // More generous collision detection - use larger radius to ensure collisions work
+        const collisionRadius = food.size / 2 + GRID_SIZE * 2.5; // Increased from 2.0 to 2.5 for better detection
+        
+        // Track nearest food for debugging
+        if (distance < nearestFoodDistance) {
+          nearestFoodDistance = distance;
+          nearestFoodId = foodId;
+        }
+        
+        // Log nearest food details when debugging
+        if (debugLog && foodChecked <= 5) {
+          console.log(`🔍 FOOD ${foodChecked}: id=${foodId} at (${food.x.toFixed(1)}, ${food.y.toFixed(1)}), distance=${distance.toFixed(1)}, radius=${collisionRadius.toFixed(1)}, would_collide=${distance <= collisionRadius}`);
+        }
+        
+        // Log if very close but not colliding (potential issue indicator)
+        if (distance <= collisionRadius + 10 && distance > collisionRadius) {
+          console.log(`⚠️ NEAR MISS: Player ${player.id} almost hit food ${foodId}: distance=${distance.toFixed(2)}, radius=${collisionRadius.toFixed(2)}, diff=${(distance - collisionRadius).toFixed(2)}`);
+        }
+        
         if (distance <= collisionRadius) {
           // Player ate food
           const oldLength = player.length;
           const oldSegmentCount = player.segments.length;
-          console.log(`🍎 FOOD COLLISION: Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius})`);
+          console.log(`🍎 FOOD COLLISION: Player ${player.id} ate food ${foodId} at distance ${distance.toFixed(2)} (collision radius: ${collisionRadius.toFixed(2)})`);
+          console.log(`🍎 PLAYER POS: (${player.x.toFixed(1)}, ${player.y.toFixed(1)})`);
+          console.log(`🍎 FOOD POS: (${food.x.toFixed(1)}, ${food.y.toFixed(1)})`);
           console.log(`🍎 BEFORE: length=${oldLength}, segments=${oldSegmentCount}, growth=${food.growthAmount}`);
           
           player.score += food.score;
@@ -307,14 +345,27 @@ class GameWorld {
           
           console.log(`🍎 AFTER: length=${player.length}, segments=${player.segments.length}`);
           console.log(`🍎 FOOD REMOVED: ${foodId} at (${food.x}, ${food.y})`);
+          console.log(`🍎 Food object before broadcast: id=${food.id}, x=${food.x}, y=${food.y}, size=${food.size}`);
           
-          // Remove food and broadcast
-          this.food.delete(foodId);
+          // IMPORTANT: Broadcast BEFORE deleting from Map to ensure food object is valid
+          // The food object itself is still valid even after Map.delete()
           this.broadcastFoodUpdate('despawn', food);
+          
+          // Remove food from Map after broadcasting
+          this.food.delete(foodId);
           
           // Spawn new food
           this.spawnFood();
-          break;
+          break; // Only eat one food per tick
+        }
+      }
+      
+      // Log nearest food summary when debugging
+      if (debugLog && nearestFoodId) {
+        const nearestFood = this.food.get(nearestFoodId);
+        if (nearestFood) {
+          const radius = nearestFood.size / 2 + GRID_SIZE * 2.5;
+          console.log(`🔍 NEAREST: Food ${nearestFoodId} at distance ${nearestFoodDistance.toFixed(1)}px (radius: ${radius.toFixed(1)}px, ${nearestFoodDistance <= radius ? 'WOULD COLLIDE' : 'too far'})`);
         }
       }
     }
@@ -335,7 +386,8 @@ class GameWorld {
       timestamp: Date.now()
     };
 
-    console.log(`📡 Broadcasting food ${action} message for ${food.id} to ${this.players.size} players`);
+    console.log(`📡 Broadcasting food ${action} message for ${food.id} (pos: ${food.x.toFixed(1)}, ${food.y.toFixed(1)}, size: ${food.size}) to ${this.players.size} players`);
+    console.log(`📡 Food message payload:`, JSON.stringify({ type: message.type, action: message.action, foodId: food.id, foodX: food.x, foodY: food.y }));
     this.broadcast(message);
   }
 
@@ -489,7 +541,7 @@ setInterval(() => {
 }, TICK_INTERVAL);
 
 server.listen(PORT, () => {
-  console.log(`🚀 Snake game server listening on :${PORT}`);
+  console.log(`✅ WS server listening on :${PORT}`);
   console.log(`📡 Health endpoint: http://localhost:${PORT}/health`);
   console.log(`🎮 WebSocket endpoint: ws://localhost:${PORT}`);
   console.log(`⚡ Server tick rate: ${TICK_RATE}Hz`);

@@ -213,11 +213,16 @@ export class GameScene extends Phaser.Scene {
     });
     
     this.netClient.on('foodUpdate', (action: 'spawn' | 'despawn', food: NetworkFoodItem) => {
-      console.log(`🍎 Food ${action}: ${food.id} at (${food.x}, ${food.y})`);
+      console.log(`🍎 Food ${action} event received: foodId=${food.id} at (${food.x.toFixed(1)}, ${food.y.toFixed(1)})`);
+      console.log(`🍎 Current networkFood Map size: ${this.networkFood.size}`);
+      console.log(`🍎 Available food IDs:`, Array.from(this.networkFood.keys()).slice(0, 10));
+      
       if (action === 'spawn') {
+        console.log(`🍎 Adding food ${food.id} to client`);
         this.addNetworkFood(food);
       } else {
-        console.log(`🍎 Despawning food ${food.id} - calling removeNetworkFood`);
+        console.log(`🍎 DESPAWN: Attempting to remove food ${food.id} from client`);
+        console.log(`🍎 Food exists in Map? ${this.networkFood.has(food.id)}`);
         this.removeNetworkFood(food.id);
       }
     });
@@ -248,10 +253,16 @@ export class GameScene extends Phaser.Scene {
       }
       
       // Load initial food from first state update, then rely on individual food updates
+      // IMPORTANT: After initial load, we only use individual foodUpdate events to avoid race conditions
       if (!this.hasReceivedInitialFood) {
         console.log(`🍎 Loading initial food: ${food.length} items`);
         this.updateNetworkFood(food);
         this.hasReceivedInitialFood = true;
+        console.log(`🍎 Initial food loaded. Will now rely on individual foodUpdate events only.`);
+      } else {
+        // After initial load, stateUpdate should NOT update food to prevent race conditions
+        // Individual foodUpdate events handle all food spawn/despawn
+        // We can use stateUpdate food list for validation/debugging, but don't sync it
       }
     });
     
@@ -573,25 +584,58 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addNetworkFood(food: NetworkFoodItem): void {
+    // Check if food already exists
+    if (this.networkFood.has(food.id)) {
+      console.warn(`⚠️ Food ${food.id} already exists in Map, skipping add`);
+      return;
+    }
+    
+    console.log(`🍎 Adding food ${food.id} at (${food.x.toFixed(1)}, ${food.y.toFixed(1)})`);
     const graphics = this.add.graphics();
     graphics.fillStyle(food.color);
     graphics.fillCircle(food.x, food.y, food.size / 2);
     this.networkFood.set(food.id, { graphics, data: food });
+    console.log(`🍎 Food added. New count: ${this.networkFood.size}`);
   }
 
   private removeNetworkFood(foodId: string): void {
-    console.log(`🍎 Attempting to remove food ${foodId} from client. Current food count: ${this.networkFood.size}`);
-    console.log(`🍎 Available food IDs:`, Array.from(this.networkFood.keys()).slice(0, 5));
+    console.log(`🍎 removeNetworkFood called for foodId=${foodId}`);
+    console.log(`🍎 Current networkFood Map size: ${this.networkFood.size}`);
+    console.log(`🍎 All available food IDs:`, Array.from(this.networkFood.keys()));
     
     const foodItem = this.networkFood.get(foodId);
     if (foodItem) {
-      console.log(`🍎 Successfully removing food ${foodId} from client`);
-      foodItem.graphics.destroy();
-      this.networkFood.delete(foodId);
+      console.log(`✅ Found food ${foodId} in Map, removing...`);
+      
+      // Check if graphics is valid before destroying
+      if (foodItem.graphics && !foodItem.graphics.destroyed) {
+        console.log(`🍎 Destroying graphics for food ${foodId}`);
+        foodItem.graphics.destroy();
+      } else {
+        console.warn(`⚠️ Graphics for food ${foodId} is already destroyed or invalid`);
+      }
+      
+      const deleted = this.networkFood.delete(foodId);
+      console.log(`🍎 Delete operation result: ${deleted}`);
       console.log(`🍎 Food removed. New count: ${this.networkFood.size}`);
+      
+      // Verify removal
+      if (this.networkFood.has(foodId)) {
+        console.error(`❌ ERROR: Food ${foodId} still exists in Map after deletion!`);
+      } else {
+        console.log(`✅ Food ${foodId} successfully removed from Map`);
+      }
     } else {
-      console.log(`⚠️ Tried to remove food ${foodId} but it wasn't found in client`);
-      console.log(`⚠️ Food ID not found in:`, Array.from(this.networkFood.keys()).slice(0, 10));
+      console.warn(`⚠️ Food ${foodId} not found in networkFood Map`);
+      console.warn(`⚠️ Map size: ${this.networkFood.size}`);
+      console.warn(`⚠️ First 10 IDs in Map:`, Array.from(this.networkFood.keys()).slice(0, 10));
+      
+      // Check if ID format matches
+      const allIds = Array.from(this.networkFood.keys());
+      const similarIds = allIds.filter(id => id.includes(foodId.slice(0, 20)));
+      if (similarIds.length > 0) {
+        console.warn(`⚠️ Found similar IDs (first 20 chars match):`, similarIds);
+      }
     }
   }
 

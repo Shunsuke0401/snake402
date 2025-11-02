@@ -334,6 +334,7 @@ export class NetClient {
   }
 
   private handleFood(message: FoodMessage): void {
+    console.log(`📥 NetClient received food message: action=${message.action}, foodId=${message.food.id}, foodX=${message.food.x.toFixed(1)}, foodY=${message.food.y.toFixed(1)}`);
     this.emit('foodUpdate', message.action, message.food);
   }
 
